@@ -66,8 +66,10 @@ class UnusableType extends Error {
 }
 
 function nimType(type: ts.Type) : string {
-	if (type.flags & ts.TypeFlags.Number)
+	if (type.flags & ts.TypeFlags.Number) // FIXME: Numberlike?
 		return "float"
+	if (type.flags & ts.TypeFlags.String) // FIXME: Stringlike?
+		return "cstring"
 	throw new UnusableType(type)
 }
 

@@ -1,5 +1,6 @@
 
 let QTALKTOME = 2
+let QTALKTOME2 = "OK"
 
 class QDEK1 {
 	ONE:number
