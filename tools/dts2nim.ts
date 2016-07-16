@@ -1,8 +1,21 @@
 import ts = require("typescript")
+let commander = require("commander")
+let error = require('commander.js-error')
 
-console.log("Processing", process.argv.slice(2))
+commander
+	.version("0.0.1")
+	.arguments("<file>")
+	.parse(process.argv)
 
-let program = ts.createProgram(process.argv.slice(2), {})
+if (commander.args.length < 1)
+	error("No file specified")
+
+if (commander.args.length > 1)
+	error("Too many files specified, at the moment the limit is 1")
+
+console.log("Processing", commander.args)
+
+let program = ts.createProgram(commander.args, {})
 
 let sourceFiles = program.getSourceFiles()
 
