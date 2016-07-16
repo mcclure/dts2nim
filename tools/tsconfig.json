@@ -1,10 +1,10 @@
 {
   "compilerOptions": {
     "module": "commonjs",
-    "outDir": "tools"
+    "outDir": "."
   },
   "files": [
     "typings/index.d.ts",
-    "tools/deets.ts"
+    "dts2nim.ts"
   ]
 }

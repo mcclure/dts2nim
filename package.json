@@ -1,0 +1,7 @@
+{
+  "dependencies": {
+  	"//" : "Used by dts2nim",
+    "commander": "^2.9.0",
+    "typescript": "^1.8.10"
+  }
+}
