@@ -10,7 +10,7 @@ install/tsGlue.js: src/tsGlue.ts
 	mkdir -p $(@D)
 	tsc
 
-install/app.js: src/app.nim
+install/app.js: src/app.nim src/tsGlue.nim
 	mkdir -p $(@D)
 	nim js -o:$@ $<
 
