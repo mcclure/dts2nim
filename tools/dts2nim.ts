@@ -6,6 +6,7 @@ commander
 	.version("0.0.1")
 	.option('-q, --quiet', 'Suppress warnings')
 	.option('--debugPrefix [prefix]', 'Print additional information for symbols starting with...')
+	.option('--debugVerbose', 'Dump entire object when printing debug information')
 	.arguments("<file>")
 	.parse(process.argv)
 
@@ -29,7 +30,11 @@ console.log("# Source files:")
 for (let sourceFile of sourceFiles) {
 	console.log("#     " + sourceFile.fileName)
 }
-console.log("")
+
+console.log()
+console.log("when not defined(js) and not defined(Nimdoc):")
+console.log("  {.error: \"This module only works on the JavaScript platform\".}")
+console.log()
 
 // Support
 
@@ -49,6 +54,27 @@ function enumBitstring(Enum, value:number, tight = false) : string {
 	return result
 }
 
+function hasBit(a:number, b:number) { return (a&b)==b }
+
+class UnusableType extends Error {
+	type: ts.Type
+	constructor(type: ts.Type) {
+		super("Cannot represent type: " + typeChecker.typeToString(type))
+		this.type = type
+	}
+}
+
+function nimType(type: ts.Type) : string {
+	if (type.flags & ts.TypeFlags.Number)
+		return "float"
+	throw new UnusableType(type)
+}
+
+function warn(...args: any[]) {
+	if (!commander.quiet)
+		console.warn.apply(args)
+}
+
 // Emit symbols
 let sourceFile = sourceFiles[sourceFiles.length-1]
 
@@ -56,13 +82,25 @@ for (let sym of typeChecker.getSymbolsInScope(sourceFile.endOfFileToken, 0xFFFFF
 	let type = typeChecker.getTypeOfSymbolAtLocation(sym, sourceFile.endOfFileToken)
 	
 	if (commander.debugPrefix && sym.name.substr(0, commander.debugPrefix.length) == commander.debugPrefix)
-		console.log("# " + sym.name + "\n#\tNode:" + enumBitstring(ts.SymbolFlags, sym.flags, true) + "\n#\tType:" + enumBitstring(ts.TypeFlags, type.flags, true) + "\n")
+		console.log("\n# " + sym.name +
+			"\n#\tNode:" + enumBitstring(ts.SymbolFlags, sym.flags, true) +
+			(commander.debugVerbose ? ", " + sym : "") +
+			"\n#\tType:" + enumBitstring(ts.TypeFlags, type.flags, true) +
+			(commander.debugVerbose ? ", " + type : "")
+		)
 
-	if (0) {
-
+	if (hasBit(sym.flags, ts.SymbolFlags.BlockScopedVariable)) {
+		try {
+			let typeString = nimType(type)
+			console.log("var " + sym.name + "* {.importc, nodecl.}: " + typeString)
+		} catch (e) {
+			if (e instanceof UnusableType)
+				warn("Could not translate variable "+sym.name+" because couldn't translate type "+typeChecker.typeToString(e.type))
+			else
+				throw e
+		}
 	} else {
-		if (!commander.quiet)
-			console.warn("Could not figure out how to translate symbol", sym.name, ":",
+		warn("Could not figure out how to translate symbol", sym.name, ":",
 				typeChecker.typeToString(type))
 	}
 }
