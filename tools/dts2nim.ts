@@ -71,10 +71,7 @@ function nimType(type: ts.Type) : string {
 	throw new UnusableType(type)
 }
 
-function warn(...args: any[]) {
-	if (!commander.quiet)
-		console.warn.apply(args)
-}
+let warn = commander.quiet ? function (...X) {} : console.warn.bind(console)
 
 function linePrefix(str:string, prefix:string, startAtLine = 0) : string {
 	let ary = str.split("\n")
