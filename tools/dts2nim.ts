@@ -97,7 +97,7 @@ for (let sym of typeChecker.getSymbolsInScope(sourceFile.endOfFileToken, 0xFFFFF
 	let type = typeChecker.getTypeOfSymbolAtLocation(sym, sourceFile.endOfFileToken)
 	
 	if (commander.debugPrefix && sym.name.substr(0, commander.debugPrefix.length) == commander.debugPrefix)
-		console.log("\n# " + sym.name +
+		console.log("\n# " + sym.name + ": " + typeChecker.typeToString(type) +
 			"\n#     Node:" + enumBitstring(ts.SymbolFlags, sym.flags, true) +
 			debugVerboseEpilogue(sym) +
 			"\n#     Type:" + enumBitstring(ts.TypeFlags, type.flags, true) +
@@ -113,6 +113,25 @@ for (let sym of typeChecker.getSymbolsInScope(sourceFile.endOfFileToken, 0xFFFFF
 				warn("Could not translate variable "+sym.name+" because couldn't translate type "+typeChecker.typeToString(e.type))
 			else
 				throw e
+		}
+	} else if (hasBit(sym.flags, ts.SymbolFlags.Function) && sym.name[0] == "Q") {
+		let counter = 0
+		for (let callSignature of type.getCallSignatures()) {
+			try {
+				let params = callSignature.getParameters().map(param =>
+					""+param.name + ":" + nimType(typeChecker.getTypeOfSymbolAtLocation(param, sourceFile.endOfFileToken))
+				)
+				let returnType = nimType(callSignature.getReturnType())
+				console.log("proc " + sym.name + "*(" + params.join(", ") + "): " + returnType + " {.importc.}")
+			} catch (e) {
+				if (e instanceof UnusableType)
+					warn("Could not translate function" + sym.name +
+						(counter > 0 ? ", call signature #" + counter : "") +
+						" because tried to translate " + typeChecker.typeToString(type) +
+						" but couldn't translate type " + typeChecker.typeToString(e.type)
+					)
+			}
+			counter++
 		}
 	} else {
 		warn("Could not figure out how to translate symbol", sym.name, ":",
