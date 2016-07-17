@@ -132,9 +132,39 @@ for (let sym of typeChecker.getSymbolsInScope(sourceFile.endOfFileToken, 0xFFFFF
 						" because tried to translate " + typeChecker.typeToString(type) +
 						" but couldn't translate type " + typeChecker.typeToString(e.type)
 					)
+				else
+					throw e
 			}
 			counter++
 		}
+	} else if (hasBit(sym.flags, ts.SymbolFlags.Class) && sym.name[0] == 'Q') {
+		let fields : string[] = []
+		let methods: string[] = []
+
+		// Public interface for SymbolTable lets you look up keys but not iterate them. Cheat:
+		for (let key in <any>sym.members) {
+			let member = sym.members[key]
+			let memberType = typeChecker.getTypeOfSymbolAtLocation(member, sourceFile.endOfFileToken)
+			if (hasBit(member.flags, ts.SymbolFlags.Property)) {
+				try {
+					let typeString = nimType(memberType)
+					fields.push(member.name + "*: " + typeString)
+				} catch (e) {
+					if (e instanceof UnusableType)
+						warn("Could not translate property " + member.name + " on class " + sym.name +
+							" because couldn't translate type " + typeChecker.typeToString(memberType)
+						)
+					else
+						throw e
+				}
+			} else if (hasBit(member.flags, ts.SymbolFlags.Method)) {
+				console.log("# Skipping method " + member.name)
+			} else {
+				warn("Could not figure out how to translate member", member.name, "of class", sym.name)
+			}
+		}
+		console.log("type "+sym.name+"* {.importc.} = object of RootObj" +
+			fields.map(field => "\n    " + field).join(""))
 	} else {
 		warn("Could not figure out how to translate symbol", sym.name, ":",
 				typeChecker.typeToString(type))
