@@ -92,6 +92,31 @@ function debugVerboseEpilogue(obj:any) : string {
 	return ", " + linePrefix(util.inspect(obj), "#         ", 1)
 }
 
+function translateProc(func: ts.Symbol, funcType: ts.Type) : string[] {
+	let result = []
+	let counter = 0
+	for (let callSignature of funcType.getCallSignatures()) {
+		try {
+			let params = callSignature.getParameters().map(param =>
+				""+param.name + ":" + nimType(typeChecker.getTypeOfSymbolAtLocation(param, sourceFile.endOfFileToken))
+			)
+			let returnType = nimType(callSignature.getReturnType())
+			result.push("proc " + func.name + "*(" + params.join(", ") + "): " + returnType + " {.importc.}")
+		} catch (e) {
+			if (e instanceof UnusableType)
+				warn("Could not translate function " + func.name +
+					(counter > 0 ? ", call signature #" + counter : "") +
+					" because tried to translate " + typeChecker.typeToString(funcType) +
+					" but couldn't translate type " + typeChecker.typeToString(e.type)
+				)
+			else
+				throw e
+		}
+		counter++
+	}
+	return result
+}
+
 // Emit symbols
 let sourceFile = sourceFiles[sourceFiles.length-1]
 
@@ -117,26 +142,8 @@ for (let sym of typeChecker.getSymbolsInScope(sourceFile.endOfFileToken, 0xFFFFF
 				throw e
 		}
 	} else if (hasBit(sym.flags, ts.SymbolFlags.Function)) {
-		let counter = 0
-		for (let callSignature of type.getCallSignatures()) {
-			try {
-				let params = callSignature.getParameters().map(param =>
-					""+param.name + ":" + nimType(typeChecker.getTypeOfSymbolAtLocation(param, sourceFile.endOfFileToken))
-				)
-				let returnType = nimType(callSignature.getReturnType())
-				console.log("proc " + sym.name + "*(" + params.join(", ") + "): " + returnType + " {.importc.}")
-			} catch (e) {
-				if (e instanceof UnusableType)
-					warn("Could not translate function " + sym.name +
-						(counter > 0 ? ", call signature #" + counter : "") +
-						" because tried to translate " + typeChecker.typeToString(type) +
-						" but couldn't translate type " + typeChecker.typeToString(e.type)
-					)
-				else
-					throw e
-			}
-			counter++
-		}
+		for (let str of translateProc(sym, type))
+			console.log(str)
 	} else if (hasBit(sym.flags, ts.SymbolFlags.Class) && sym.name[0] == 'Q') {
 		let fields : string[] = []
 		let methods: string[] = []
