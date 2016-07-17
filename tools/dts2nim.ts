@@ -70,6 +70,8 @@ function nimType(type: ts.Type) : string {
 		return "float"
 	if (type.flags & ts.TypeFlags.String) // FIXME: Stringlike?
 		return "cstring"
+	if (type.flags & ts.TypeFlags.Void)
+		return "void"
 	throw new UnusableType(type)
 }
 
@@ -125,7 +127,7 @@ for (let sym of typeChecker.getSymbolsInScope(sourceFile.endOfFileToken, 0xFFFFF
 				console.log("proc " + sym.name + "*(" + params.join(", ") + "): " + returnType + " {.importc.}")
 			} catch (e) {
 				if (e instanceof UnusableType)
-					warn("Could not translate function" + sym.name +
+					warn("Could not translate function " + sym.name +
 						(counter > 0 ? ", call signature #" + counter : "") +
 						" because tried to translate " + typeChecker.typeToString(type) +
 						" but couldn't translate type " + typeChecker.typeToString(e.type)

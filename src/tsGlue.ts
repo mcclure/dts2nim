@@ -19,3 +19,7 @@ class QDEK2 extends QDEK1 {
 }
 
 let QDEKZ:QDEK1
+
+function QCONSOLELOG(s:string) {
+	console.log(s)
+}
