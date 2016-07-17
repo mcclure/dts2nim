@@ -9,6 +9,8 @@ function QADDONE(x:number) {
 class QDEK1 {
 	ONE:number
 	TWO:string
+
+	FUNC(x:number) { return x + 2 }
 }
 
 class QDEK2 extends QDEK1 {

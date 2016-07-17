@@ -116,7 +116,7 @@ for (let sym of typeChecker.getSymbolsInScope(sourceFile.endOfFileToken, 0xFFFFF
 			else
 				throw e
 		}
-	} else if (hasBit(sym.flags, ts.SymbolFlags.Function) && sym.name[0] == "Q") {
+	} else if (hasBit(sym.flags, ts.SymbolFlags.Function)) {
 		let counter = 0
 		for (let callSignature of type.getCallSignatures()) {
 			try {
