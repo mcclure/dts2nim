@@ -20,7 +20,7 @@ class QDEK2 extends QDEK1 {
 	}
 }
 
-let QDEKZ:QDEK1
+let QDEKZ = new QDEK2("3")
 
 function QCONSOLELOG(s:string) {
 	console.log(s)

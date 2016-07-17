@@ -1,3 +1,5 @@
+// Takes an input ts file, converts types in final scope to Nim and outputs Nim file to stdout
+
 import ts = require("typescript")
 import util = require("util")
 let commander = require("commander")
@@ -55,8 +57,10 @@ function enumBitstring(Enum, value:number, tight = false) : string {
 	return result
 }
 
+// Are all bits in b set in a?
 function hasBit(a:number, b:number) { return (a&b)==b }
 
+// Raised on Typescript type the converter script doesn't know how to convert
 class UnusableType extends Error {
 	type: ts.Type
 	constructor(type: ts.Type) {
@@ -65,6 +69,7 @@ class UnusableType extends Error {
 	}
 }
 
+// Get Nim-source string corresponding to TypeScript type
 function nimType(type: ts.Type) : string {
 	if (type.flags & ts.TypeFlags.Number) // FIXME: Numberlike?
 		return "float"
@@ -77,8 +82,10 @@ function nimType(type: ts.Type) : string {
 	throw new UnusableType(type)
 }
 
+// Prints to stderr, suppressed if -q option given
 let warn = commander.quiet ? function (...X) {} : console.warn.bind(console)
 
+// Prefix `prefix` to every line of `string`, starting at line `startAtLine`
 function linePrefix(str:string, prefix:string, startAtLine = 0) : string {
 	let ary = str.split("\n")
 	for (let idx in ary) {
@@ -88,12 +95,15 @@ function linePrefix(str:string, prefix:string, startAtLine = 0) : string {
 	return ary.join("\n")
 }
 
+// Return a string containing a commented-out string representation of an object,
+// for tacking onto the end of an existing comment line
 function debugVerboseEpilogue(obj:any) : string {
 	if (!commander.debugVerbose)
 		return ""
 	return ", " + linePrefix(util.inspect(obj), "#         ", 1)
 }
 
+// Convert TypeScript identifier to legal Nim identifier
 // FIXME: Leaves open possibility of collisions
 function identifierScrub(id:string) : string {
 	return id
@@ -101,10 +111,12 @@ function identifierScrub(id:string) : string {
 		.replace(/^_/, "")
 }
 
+// Print {.importc.} with possible symbol correction
 function importDirective(id:string, cpp:boolean = false) {
 	return "importc" + (cpp?"pp":"") + (id != identifierScrub(id) ? ":\"" + id + "\"" : "")
 }
 
+// Convert TypeScript symbol defining a function to a Nim source string
 // If "owner" present, this is a method, otherwise it's a function
 function translateProc(func: ts.Symbol, funcType: ts.Type, owner: ts.Symbol = null, ownerType: ts.Type = null) : string[] {
 	let result = []
@@ -122,7 +134,7 @@ function translateProc(func: ts.Symbol, funcType: ts.Type, owner: ts.Symbol = nu
 			}
 			result.push("proc " + identifierScrub(func.name) + "*(" +
 				paramStrings.join(", ") + "): " + returnTypeString +
-				"{." + importDirective(func.name, !!owner) + ".}")
+				" {." + importDirective(func.name, !!owner) + ".}")
 		} catch (e) {
 			if (e instanceof UnusableType)
 				warn("Could not translate " +
@@ -142,11 +154,13 @@ function translateProc(func: ts.Symbol, funcType: ts.Type, owner: ts.Symbol = nu
 }
 
 // Emit symbols
+
 let sourceFile = sourceFiles[sourceFiles.length-1]
 
 for (let sym of typeChecker.getSymbolsInScope(sourceFile.endOfFileToken, 0xFFFFFFFF)) {
 	let type = typeChecker.getTypeOfSymbolAtLocation(sym, sourceFile.endOfFileToken)
 	
+	// Handle --debugPrefix command
 	if (commander.debugPrefix && sym.name.substr(0, commander.debugPrefix.length) == commander.debugPrefix)
 		console.log("\n# " + sym.name + ": " + typeChecker.typeToString(type) +
 			"\n#     Node:" + enumBitstring(ts.SymbolFlags, sym.flags, true) +
@@ -155,6 +169,7 @@ for (let sym of typeChecker.getSymbolsInScope(sourceFile.endOfFileToken, 0xFFFFF
 			debugVerboseEpilogue(type)
 		)
 
+	// Variable
 	if (hasBit(sym.flags, ts.SymbolFlags.BlockScopedVariable)) {
 		try {
 			let typeString = nimType(type)
@@ -166,18 +181,29 @@ for (let sym of typeChecker.getSymbolsInScope(sourceFile.endOfFileToken, 0xFFFFF
 			else
 				throw e
 		}
+
+	// Function
 	} else if (hasBit(sym.flags, ts.SymbolFlags.Function)) {
 		for (let str of translateProc(sym, type))
 			console.log(str)
+	
+	// Class
 	} else if (hasBit(sym.flags, ts.SymbolFlags.Class)) {
 		let fields : string[] = []
 		let methods: string[] = []
 
-		// Public interface for SymbolTable lets you look up keys but not iterate them. Cheat:
+		// Iterate over class members
+		// Public interface for SymbolTable lets you look up keys but not iterate them. CHEAT:
 		for (let key in <any>sym.members) {
 			let member = sym.members[key]
 			let memberType = typeChecker.getTypeOfSymbolAtLocation(member, sourceFile.endOfFileToken)
-			if (hasBit(member.flags, ts.SymbolFlags.Property)) {
+			
+			// Member is a constructor
+			if (hasBit(member.flags, ts.SymbolFlags.Constructor)) {
+				// Will handle separately
+			
+			// Member is a field
+			} if (hasBit(member.flags, ts.SymbolFlags.Property)) {
 				try {
 					let typeString = nimType(memberType)
 					fields.push(member.name + "*: " + typeString)
@@ -189,15 +215,28 @@ for (let sym of typeChecker.getSymbolsInScope(sourceFile.endOfFileToken, 0xFFFFF
 					else
 						throw e
 				}
+
+			// Member is a method
 			} else if (hasBit(member.flags, ts.SymbolFlags.Method)) {
 				methods = methods.concat( translateProc(member, memberType, sym, type) )
+			
+			// Member is unsupported
 			} else {
 				warn("Could not figure out how to translate member", member.name, "of class", sym.name)
 			}
 		}
-		console.log("type " + identifierScrub(sym.name) + "* {." + importDirective(sym.name) + ".} = object of RootObj" +
+
+		// Get superclass
+		// Neither "heritageClauses" nor "types" are exposed. CHEAT: 
+		let heritageClauses = (<any>sym.declarations[0]).heritageClauses
+		let inherit = heritageClauses ? heritageClauses[0].types[0].expression.text : null
+		let inheritString = inherit ? inherit : "RootObj"
+
+		console.log("type " + identifierScrub(sym.name) + "* {." + importDirective(sym.name) + ".} = ref object of " + inheritString +
 			fields.map(field => "\n    " + field).join("") +
 			methods.map(method => "\n" + method).join(""))
+
+	// Unsupported
 	} else {
 		warn("Could not figure out how to translate symbol", sym.name, ":",
 				typeChecker.typeToString(type))
