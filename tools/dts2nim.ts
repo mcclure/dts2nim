@@ -72,6 +72,8 @@ function nimType(type: ts.Type) : string {
 		return "cstring"
 	if (type.flags & ts.TypeFlags.Void)
 		return "void"
+	if ((type.flags & ts.TypeFlags.Class) && type.symbol)
+		return type.symbol.name
 	throw new UnusableType(type)
 }
 
@@ -92,19 +94,30 @@ function debugVerboseEpilogue(obj:any) : string {
 	return ", " + linePrefix(util.inspect(obj), "#         ", 1)
 }
 
-function translateProc(func: ts.Symbol, funcType: ts.Type) : string[] {
+// If "owner" present, this is a method, otherwise it's a function
+function translateProc(func: ts.Symbol, funcType: ts.Type, owner: ts.Symbol = null, ownerType: ts.Type = null) : string[] {
 	let result = []
 	let counter = 0
 	for (let callSignature of funcType.getCallSignatures()) {
 		try {
-			let params = callSignature.getParameters().map(param =>
+			let paramStrings = callSignature.getParameters().map(param =>
 				""+param.name + ":" + nimType(typeChecker.getTypeOfSymbolAtLocation(param, sourceFile.endOfFileToken))
 			)
-			let returnType = nimType(callSignature.getReturnType())
-			result.push("proc " + func.name + "*(" + params.join(", ") + "): " + returnType + " {.importc.}")
+			let returnTypeString = nimType(callSignature.getReturnType())
+			if (owner) {
+				// Notice nimType is not called. It seems certain this will break in some situation.
+				let ownerTypeString = owner.name
+				paramStrings = ["self:"+ownerTypeString].concat(paramStrings)
+			}
+			result.push("proc " + func.name + "*(" +
+				paramStrings.join(", ") + "): " + returnTypeString +
+				(owner ? " {.importcpp.}" : " {.importc.}") )
 		} catch (e) {
 			if (e instanceof UnusableType)
-				warn("Could not translate function " + func.name +
+				warn("Could not translate " +
+					(owner ?
+						"method " +  func.name + " for class " + owner.name :
+						"function " + func.name) +
 					(counter > 0 ? ", call signature #" + counter : "") +
 					" because tried to translate " + typeChecker.typeToString(funcType) +
 					" but couldn't translate type " + typeChecker.typeToString(e.type)
@@ -144,7 +157,7 @@ for (let sym of typeChecker.getSymbolsInScope(sourceFile.endOfFileToken, 0xFFFFF
 	} else if (hasBit(sym.flags, ts.SymbolFlags.Function)) {
 		for (let str of translateProc(sym, type))
 			console.log(str)
-	} else if (hasBit(sym.flags, ts.SymbolFlags.Class) && sym.name[0] == 'Q') {
+	} else if (hasBit(sym.flags, ts.SymbolFlags.Class)) {
 		let fields : string[] = []
 		let methods: string[] = []
 
@@ -165,13 +178,14 @@ for (let sym of typeChecker.getSymbolsInScope(sourceFile.endOfFileToken, 0xFFFFF
 						throw e
 				}
 			} else if (hasBit(member.flags, ts.SymbolFlags.Method)) {
-				console.log("# Skipping method " + member.name)
+				methods = methods.concat( translateProc(member, memberType, sym, type) )
 			} else {
 				warn("Could not figure out how to translate member", member.name, "of class", sym.name)
 			}
 		}
 		console.log("type "+sym.name+"* {.importc.} = object of RootObj" +
-			fields.map(field => "\n    " + field).join(""))
+			fields.map(field => "\n    " + field).join("") +
+			methods.map(method => "\n" + method).join(""))
 	} else {
 		warn("Could not figure out how to translate symbol", sym.name, ":",
 				typeChecker.typeToString(type))
