@@ -94,6 +94,17 @@ function debugVerboseEpilogue(obj:any) : string {
 	return ", " + linePrefix(util.inspect(obj), "#         ", 1)
 }
 
+// FIXME: Leaves open possibility of collisions
+function identifierScrub(id:string) : string {
+	return id
+		.replace(/_{2,}/, "_")
+		.replace(/^_/, "")
+}
+
+function importDirective(id:string, cpp:boolean = false) {
+	return "importc" + (cpp?"pp":"") + (id != identifierScrub(id) ? ":\"" + id + "\"" : "")
+}
+
 // If "owner" present, this is a method, otherwise it's a function
 function translateProc(func: ts.Symbol, funcType: ts.Type, owner: ts.Symbol = null, ownerType: ts.Type = null) : string[] {
 	let result = []
@@ -101,17 +112,17 @@ function translateProc(func: ts.Symbol, funcType: ts.Type, owner: ts.Symbol = nu
 	for (let callSignature of funcType.getCallSignatures()) {
 		try {
 			let paramStrings = callSignature.getParameters().map(param =>
-				""+param.name + ":" + nimType(typeChecker.getTypeOfSymbolAtLocation(param, sourceFile.endOfFileToken))
+				""+identifierScrub(param.name) + ":" + nimType(typeChecker.getTypeOfSymbolAtLocation(param, sourceFile.endOfFileToken))
 			)
 			let returnTypeString = nimType(callSignature.getReturnType())
 			if (owner) {
 				// Notice nimType is not called. It seems certain this will break in some situation.
-				let ownerTypeString = owner.name
+				let ownerTypeString = identifierScrub(owner.name)
 				paramStrings = ["self:"+ownerTypeString].concat(paramStrings)
 			}
-			result.push("proc " + func.name + "*(" +
+			result.push("proc " + identifierScrub(func.name) + "*(" +
 				paramStrings.join(", ") + "): " + returnTypeString +
-				(owner ? " {.importcpp.}" : " {.importc.}") )
+				"{." + importDirective(func.name, !!owner) + ".}")
 		} catch (e) {
 			if (e instanceof UnusableType)
 				warn("Could not translate " +
@@ -147,7 +158,8 @@ for (let sym of typeChecker.getSymbolsInScope(sourceFile.endOfFileToken, 0xFFFFF
 	if (hasBit(sym.flags, ts.SymbolFlags.BlockScopedVariable)) {
 		try {
 			let typeString = nimType(type)
-			console.log("var " + sym.name + "* {.importc, nodecl.}: " + typeString)
+			console.log("var " + identifierScrub(sym.name) + "* {." + importDirective(sym.name) + ", nodecl.}: "
+				+ typeString)
 		} catch (e) {
 			if (e instanceof UnusableType)
 				warn("Could not translate variable "+sym.name+" because couldn't translate type "+typeChecker.typeToString(e.type))
@@ -183,7 +195,7 @@ for (let sym of typeChecker.getSymbolsInScope(sourceFile.endOfFileToken, 0xFFFFF
 				warn("Could not figure out how to translate member", member.name, "of class", sym.name)
 			}
 		}
-		console.log("type "+sym.name+"* {.importc.} = object of RootObj" +
+		console.log("type " + identifierScrub(sym.name) + "* {." + importDirective(sym.name) + ".} = object of RootObj" +
 			fields.map(field => "\n    " + field).join("") +
 			methods.map(method => "\n" + method).join(""))
 	} else {
