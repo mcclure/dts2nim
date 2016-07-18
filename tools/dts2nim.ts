@@ -112,27 +112,44 @@ function identifierScrub(id:string) : string {
 }
 
 // Print {.importc.} with possible symbol correction
-function importDirective(id:string, cpp:boolean = false) {
+function importDirective(id:string, cpp:boolean = false) : string {
 	return "importc" + (cpp?"pp":"") + (id != identifierScrub(id) ? ":\"" + id + "\"" : "")
+}
+
+function capitalizeFirstLetter(str:string) : string {
+	return str.charAt(0).toUpperCase() + str.slice(1)
+}
+
+function constructorNameForClass(str:string) : string {
+	return "new" + capitalizeFirstLetter(str)
+}
+
+// Convert a params list to
+function translateParameters(params:ts.Symbol[], owner: ts.Symbol = null) : string[] {
+	let paramStrings = params.map(param =>
+				""+identifierScrub(param.name) + ":" + nimType(typeChecker.getTypeOfSymbolAtLocation(param, sourceFile.endOfFileToken))
+			)
+	if (owner) {
+		// Notice nimType is not called. It seems certain this will break in some situation.
+		let ownerTypeString = identifierScrub(owner.name)
+		paramStrings = ["self:"+ownerTypeString].concat(paramStrings)
+	}
+	return paramStrings
 }
 
 // Convert TypeScript symbol defining a function to a Nim source string
 // If "owner" present, this is a method, otherwise it's a function
-function translateProc(func: ts.Symbol, funcType: ts.Type, owner: ts.Symbol = null, ownerType: ts.Type = null) : string[] {
+function translateProc(func: ts.Symbol, funcType: ts.Type, owner: ts.Symbol = null) : string[] {
 	let result = []
 	let counter = 0
+	let name = identifierScrub(func.name)
+
 	for (let callSignature of funcType.getCallSignatures()) {
 		try {
-			let paramStrings = callSignature.getParameters().map(param =>
-				""+identifierScrub(param.name) + ":" + nimType(typeChecker.getTypeOfSymbolAtLocation(param, sourceFile.endOfFileToken))
-			)
+			let paramStrings = translateParameters(callSignature.getParameters(), owner)
 			let returnTypeString = nimType(callSignature.getReturnType())
-			if (owner) {
-				// Notice nimType is not called. It seems certain this will break in some situation.
-				let ownerTypeString = identifierScrub(owner.name)
-				paramStrings = ["self:"+ownerTypeString].concat(paramStrings)
-			}
-			result.push("proc " + identifierScrub(func.name) + "*(" +
+			
+			result.push("proc " + name + "*(" +
 				paramStrings.join(", ") + "): " + returnTypeString +
 				" {." + importDirective(func.name, !!owner) + ".}")
 		} catch (e) {
@@ -151,6 +168,24 @@ function translateProc(func: ts.Symbol, funcType: ts.Type, owner: ts.Symbol = nu
 		counter++
 	}
 	return result
+}
+
+// Given a symbol name and optionally a node declaration from a Constructor symbol, produce a constructor declaration
+// Public interface for ts.Declaration doesn't expose parameters. CHEAT:
+function translateSingleConstructor(owner: ts.Symbol, declaration:any = null) {
+	let name = constructorNameForClass(owner.name)
+	let params = declaration ?
+		translateParameters(declaration.parameters.map(node => node.symbol)) :
+		[]
+
+	// Notice again the problem with owner.name mentioned in translateParameters
+	return "proc " + name + "*(" + params.join(", ") + ") : " + identifierScrub(owner.name) +
+		" {.importcpp:\"new " +  owner.name + (params.length?"(@)":"") + "\".}"
+}
+
+// Create constructor for class. May have multiple signatures (I assume this is what 'declaration' is?)
+function translateConstructor(owner: ts.Symbol, constructor: ts.Symbol) : string[] {
+	return constructor.declarations.map(declaration => translateSingleConstructor(owner, declaration))
 }
 
 // Emit symbols
@@ -191,6 +226,8 @@ for (let sym of typeChecker.getSymbolsInScope(sourceFile.endOfFileToken, 0xFFFFF
 	} else if (hasBit(sym.flags, ts.SymbolFlags.Class)) {
 		let fields : string[] = []
 		let methods: string[] = []
+		let constructorName = "new" + capitalizeFirstLetter(sym.name)
+		let foundConstructor = false
 
 		// Iterate over class members
 		// Public interface for SymbolTable lets you look up keys but not iterate them. CHEAT:
@@ -200,10 +237,12 @@ for (let sym of typeChecker.getSymbolsInScope(sourceFile.endOfFileToken, 0xFFFFF
 			
 			// Member is a constructor
 			if (hasBit(member.flags, ts.SymbolFlags.Constructor)) {
-				// Will handle separately
-			
+				let constructors = translateConstructor(sym, member)
+				foundConstructor = foundConstructor || !!constructors.length
+				methods = methods.concat( constructors )
+
 			// Member is a field
-			} if (hasBit(member.flags, ts.SymbolFlags.Property)) {
+			} else if (hasBit(member.flags, ts.SymbolFlags.Property)) {
 				try {
 					let typeString = nimType(memberType)
 					fields.push(member.name + "*: " + typeString)
@@ -218,7 +257,7 @@ for (let sym of typeChecker.getSymbolsInScope(sourceFile.endOfFileToken, 0xFFFFF
 
 			// Member is a method
 			} else if (hasBit(member.flags, ts.SymbolFlags.Method)) {
-				methods = methods.concat( translateProc(member, memberType, sym, type) )
+				methods = methods.concat( translateProc(member, memberType, sym) )
 			
 			// Member is unsupported
 			} else {
@@ -231,6 +270,11 @@ for (let sym of typeChecker.getSymbolsInScope(sourceFile.endOfFileToken, 0xFFFFF
 		let heritageClauses = (<any>sym.declarations[0]).heritageClauses
 		let inherit = heritageClauses ? heritageClauses[0].types[0].expression.text : null
 		let inheritString = inherit ? inherit : "RootObj"
+
+		// Get constructor
+		// FIXME: Produces garbage on inherited constructors
+		if (!foundConstructor)
+			methods.push(translateSingleConstructor(sym))
 
 		console.log("type " + identifierScrub(sym.name) + "* {." + importDirective(sym.name) + ".} = ref object of " + inheritString +
 			fields.map(field => "\n    " + field).join("") +

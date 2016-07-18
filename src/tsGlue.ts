@@ -15,9 +15,13 @@ class QDEK1 {
 
 class QDEK2 extends QDEK1 {
 	THREE:number
+	FOUR:string
 	constructor(ok:string) {
 		super()
+		this.THREE = 3
+		this.FOUR = ok
 	}
+	FUNC2(y:string) { return this.FOUR + y }
 }
 
 let QDEKZ = new QDEK2("3")
