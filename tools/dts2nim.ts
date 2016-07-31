@@ -198,8 +198,9 @@ function translateProc(func: ts.Symbol, funcType: ts.Type, owner: ts.Symbol = nu
 			result.push("proc " + name + "*(" +
 				paramStrings.join(", ") + "): " + returnTypeString +
 				" {." + importDirective(func.name, !!owner) + ".}")
-		} catch (e) {
-			if (e instanceof UnusableType)
+		} catch (_e) {
+			if (_e instanceof UnusableType) {
+				let e:UnusableType = _e
 				warn("Could not translate "
 					+ (owner
 						? `method ${func.name} for class ${owner.name}`
@@ -208,8 +209,9 @@ function translateProc(func: ts.Symbol, funcType: ts.Type, owner: ts.Symbol = nu
 					+ ` because tried to translate ${typeChecker.typeToString(funcType)}`
 					+ ` but couldn't translate type ${typeChecker.typeToString(e.type)}`
 				)
-			else
-				throw e
+			} else {
+				throw _e
+			}
 		}
 		counter++
 	}
@@ -256,11 +258,13 @@ for (let sym of typeChecker.getSymbolsInScope(sourceFile.endOfFileToken, 0xFFFFF
 			let typeString = nimType(type)
 			console.log("var " + identifierScrub(sym.name) + "* {." + importDirective(sym.name) + ", nodecl.}: "
 				+ typeString)
-		} catch (e) {
-			if (e instanceof UnusableType)
+		} catch (_e) {
+			if (_e instanceof UnusableType) {
+				let e: UnusableType = _e
 				warn("Could not translate variable "+sym.name+" because couldn't translate type "+typeChecker.typeToString(e.type))
-			else
-				throw e
+			} else {
+				throw _e
+			}
 		}
 
 	// Function
@@ -292,13 +296,15 @@ for (let sym of typeChecker.getSymbolsInScope(sourceFile.endOfFileToken, 0xFFFFF
 				try {
 					let typeString = nimType(memberType)
 					fields.push(member.name + "*: " + typeString)
-				} catch (e) {
-					if (e instanceof UnusableType)
+				} catch (_e) {
+					if (_e instanceof UnusableType) {
+						let e:UnusableType = _e
 						warn("Could not translate property " + member.name + " on class " + sym.name +
 							" because couldn't translate type " + typeChecker.typeToString(memberType)
 						)
-					else
-						throw e
+					} else {
+						throw _e
+					}
 				}
 
 			// Member is a method
