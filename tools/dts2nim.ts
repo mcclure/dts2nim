@@ -62,24 +62,70 @@ function hasBit(a:number, b:number) { return (a&b)==b }
 
 // Raised on Typescript type the converter script doesn't know how to convert
 class UnusableType extends Error {
-	type: ts.Type
-	constructor(type: ts.Type) {
-		super("Cannot represent type: " + typeChecker.typeToString(type))
-		this.type = type
+	constructor(public tsType: ts.Type) {
+		super("Cannot represent type: " + typeChecker.typeToString(tsType))
 	}
 }
 
+// Generator classes
+
+interface Gen {
+	declaration() : string
+}
+
+interface TypeGen extends Gen {
+	type() : string
+}
+
+class VariableGen implements Gen {
+	declaration() : string {
+		throw new Error("TODO")
+	}
+}
+
+class FunctionGen implements Gen {
+	declaration() : string {
+		throw new Error("TODO")
+	}
+}
+
+class LiteralTypeGen implements TypeGen {
+	constructor(public literal: string) {}
+
+	declaration() : string { throw new Error("Tried to emit a declaration for a a core type") }
+	type() { return this.literal }
+}
+
+class ClassGen implements TypeGen {
+	constructor(public tsType: ts.Type, public name: string) {}
+
+	declaration() : string {
+		throw new Error("TODO")
+	}
+	type() {
+		return this.name
+	}
+}
+
+class GenVendor {
+	typeGen(tsType: ts.Type) : TypeGen {
+		if (tsType.flags & ts.TypeFlags.Number) // FIXME: Numberlike?
+			return new LiteralTypeGen("float")
+		if (tsType.flags & ts.TypeFlags.String) // FIXME: Stringlike?
+			return new LiteralTypeGen("cstring")
+		if (tsType.flags & ts.TypeFlags.Void)
+			return new LiteralTypeGen("void")
+		if ((tsType.flags & ts.TypeFlags.Class) && tsType.symbol)
+			return new ClassGen(tsType, tsType.symbol.name)
+		throw new UnusableType(tsType)
+	}
+}
+
+let vendor = new GenVendor()
+
 // Get Nim-source string corresponding to TypeScript type
 function nimType(type: ts.Type) : string {
-	if (type.flags & ts.TypeFlags.Number) // FIXME: Numberlike?
-		return "float"
-	if (type.flags & ts.TypeFlags.String) // FIXME: Stringlike?
-		return "cstring"
-	if (type.flags & ts.TypeFlags.Void)
-		return "void"
-	if ((type.flags & ts.TypeFlags.Class) && type.symbol)
-		return type.symbol.name
-	throw new UnusableType(type)
+	return vendor.typeGen(type).type()
 }
 
 // Prints to stderr, suppressed if -q option given
@@ -154,13 +200,13 @@ function translateProc(func: ts.Symbol, funcType: ts.Type, owner: ts.Symbol = nu
 				" {." + importDirective(func.name, !!owner) + ".}")
 		} catch (e) {
 			if (e instanceof UnusableType)
-				warn("Could not translate " +
-					(owner ?
-						"method " +  func.name + " for class " + owner.name :
-						"function " + func.name) +
-					(counter > 0 ? ", call signature #" + counter : "") +
-					" because tried to translate " + typeChecker.typeToString(funcType) +
-					" but couldn't translate type " + typeChecker.typeToString(e.type)
+				warn("Could not translate "
+					+ (owner
+						? `method ${func.name} for class ${owner.name}`
+						: `function ${func.name}`)
+					+ (counter > 0 ? `, call signature #${counter}` : "")
+					+ ` because tried to translate ${typeChecker.typeToString(funcType)}`
+					+ ` but couldn't translate type ${typeChecker.typeToString(e.type)}`
 				)
 			else
 				throw e
