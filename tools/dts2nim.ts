@@ -62,8 +62,8 @@ function hasBit(a:number, b:number) { return (a&b)==b }
 
 // Raised on Typescript type the converter script doesn't know how to convert
 class UnusableType extends Error {
-	constructor(public tsType: ts.Type) {
-		super("Cannot represent type: " + typeChecker.typeToString(tsType))
+	constructor(public type: ts.Type) {
+		super("Cannot represent type: " + typeChecker.typeToString(type))
 	}
 }
 
