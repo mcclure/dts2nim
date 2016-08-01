@@ -67,24 +67,49 @@ class UnusableType extends Error {
 	}
 }
 
+class GenConstructFail extends Error {
+}
+
 // Generator classes
 
+interface GenVendor {
+	typeGen(tsType: ts.Type)
+}
+
 interface Gen {
-	declaration() : string
+	declString() : string
+}
+
+function decls(a: Gen[]) {
+	return a.map(g => g.declString()).join("\n")
 }
 
 interface TypeGen extends Gen {
-	type() : string
+	typeString() : string
 }
 
 class VariableGen implements Gen {
-	declaration() : string {
-		throw new Error("TODO")
+	type: TypeGen
+	constructor(public sym: ts.Symbol, tsType: ts.Type) {
+		try {
+			this.type = vendor.typeGen(tsType)
+			
+		} catch (_e) {
+			let e:{} = _e
+			if (e instanceof UnusableType)
+				throw new GenConstructFail("Could not translate variable "+sym.name+" because couldn't translate type "+typeChecker.typeToString(e.type))
+			else
+				throw e
+		}
+	}
+	declString() : string {
+		return `var ${identifierScrub(this.sym.name)}* {.${importDirective(this.sym.name)}, nodecl.}: `
+				+ this.type.typeString()
 	}
 }
 
 class FunctionGen implements Gen {
-	declaration() : string {
+	declString() : string {
 		throw new Error("TODO")
 	}
 }
@@ -92,17 +117,17 @@ class FunctionGen implements Gen {
 class LiteralTypeGen implements TypeGen {
 	constructor(public literal: string) {}
 
-	declaration() : string { throw new Error("Tried to emit a declaration for a a core type") }
-	type() { return this.literal }
+	declString() : string { throw new Error("Tried to emit a declaration for a a core type") }
+	typeString() { return this.literal }
 }
 
 class ClassGen implements TypeGen {
 	constructor(public tsType: ts.Type, public name: string) {}
 
-	declaration() : string {
+	declString() : string {
 		throw new Error("TODO")
 	}
-	type() {
+	typeString() {
 		return this.name
 	}
 }
@@ -119,13 +144,17 @@ class GenVendor {
 			return new ClassGen(tsType, tsType.symbol.name)
 		throw new UnusableType(tsType)
 	}
+
+	variableGen(sym: ts.Symbol, tsType: ts.Type) {
+		return new VariableGen(sym, tsType)
+	}
 }
 
 let vendor = new GenVendor()
 
 // Get Nim-source string corresponding to TypeScript type
 function nimType(type: ts.Type) : string {
-	return vendor.typeGen(type).type()
+	return vendor.typeGen(type).typeString()
 }
 
 // Prints to stderr, suppressed if -q option given
@@ -199,8 +228,8 @@ function translateProc(func: ts.Symbol, funcType: ts.Type, owner: ts.Symbol = nu
 				paramStrings.join(", ") + "): " + returnTypeString +
 				" {." + importDirective(func.name, !!owner) + ".}")
 		} catch (_e) {
-			if (_e instanceof UnusableType) {
-				let e:UnusableType = _e
+			let e:{} = _e
+			if (e instanceof UnusableType)
 				warn("Could not translate "
 					+ (owner
 						? `method ${func.name} for class ${owner.name}`
@@ -209,9 +238,8 @@ function translateProc(func: ts.Symbol, funcType: ts.Type, owner: ts.Symbol = nu
 					+ ` because tried to translate ${typeChecker.typeToString(funcType)}`
 					+ ` but couldn't translate type ${typeChecker.typeToString(e.type)}`
 				)
-			} else {
-				throw _e
-			}
+			else
+				throw e
 		}
 		counter++
 	}
@@ -239,6 +267,7 @@ function translateConstructor(owner: ts.Symbol, constructor: ts.Symbol) : string
 // Emit symbols
 
 let sourceFile = sourceFiles[sourceFiles.length-1]
+let generators : Gen[] = []
 
 for (let sym of typeChecker.getSymbolsInScope(sourceFile.endOfFileToken, 0xFFFFFFFF)) {
 	let type = typeChecker.getTypeOfSymbolAtLocation(sym, sourceFile.endOfFileToken)
@@ -253,88 +282,86 @@ for (let sym of typeChecker.getSymbolsInScope(sourceFile.endOfFileToken, 0xFFFFF
 		)
 
 	// Variable
-	if (hasBit(sym.flags, ts.SymbolFlags.BlockScopedVariable)) {
-		try {
-			let typeString = nimType(type)
-			console.log("var " + identifierScrub(sym.name) + "* {." + importDirective(sym.name) + ", nodecl.}: "
-				+ typeString)
-		} catch (_e) {
-			if (_e instanceof UnusableType) {
-				let e: UnusableType = _e
-				warn("Could not translate variable "+sym.name+" because couldn't translate type "+typeChecker.typeToString(e.type))
-			} else {
-				throw _e
-			}
-		}
+	try {
+		if (hasBit(sym.flags, ts.SymbolFlags.BlockScopedVariable)) {
+			generators.push( vendor.variableGen(sym, type) )
 
-	// Function
-	} else if (hasBit(sym.flags, ts.SymbolFlags.Function)) {
-		for (let str of translateProc(sym, type))
-			console.log(str)
-	
-	// Class
-	} else if (hasBit(sym.flags, ts.SymbolFlags.Class)) {
-		let fields : string[] = []
-		let methods: string[] = []
-		let constructorName = "new" + capitalizeFirstLetter(sym.name)
-		let foundConstructor = false
+		// Function
+		} else if (hasBit(sym.flags, ts.SymbolFlags.Function)) {
+			for (let str of translateProc(sym, type))
+				console.log(str)
+		
+		// Class
+		} else if (hasBit(sym.flags, ts.SymbolFlags.Class)) {
+			let fields : string[] = []
+			let methods: string[] = []
+			let constructorName = "new" + capitalizeFirstLetter(sym.name)
+			let foundConstructor = false
 
-		// Iterate over class members
-		// Public interface for SymbolTable lets you look up keys but not iterate them. CHEAT:
-		for (let key in <any>sym.members) {
-			let member = sym.members[key]
-			let memberType = typeChecker.getTypeOfSymbolAtLocation(member, sourceFile.endOfFileToken)
-			
-			// Member is a constructor
-			if (hasBit(member.flags, ts.SymbolFlags.Constructor)) {
-				let constructors = translateConstructor(sym, member)
-				foundConstructor = foundConstructor || !!constructors.length
-				methods = methods.concat( constructors )
+			// Iterate over class members
+			// Public interface for SymbolTable lets you look up keys but not iterate them. CHEAT:
+			for (let key in <any>sym.members) {
+				let member = sym.members[key]
+				let memberType = typeChecker.getTypeOfSymbolAtLocation(member, sourceFile.endOfFileToken)
+				
+				// Member is a constructor
+				if (hasBit(member.flags, ts.SymbolFlags.Constructor)) {
+					let constructors = translateConstructor(sym, member)
+					foundConstructor = foundConstructor || !!constructors.length
+					methods = methods.concat( constructors )
 
-			// Member is a field
-			} else if (hasBit(member.flags, ts.SymbolFlags.Property)) {
-				try {
-					let typeString = nimType(memberType)
-					fields.push(member.name + "*: " + typeString)
-				} catch (_e) {
-					if (_e instanceof UnusableType) {
-						let e:UnusableType = _e
-						warn("Could not translate property " + member.name + " on class " + sym.name +
-							" because couldn't translate type " + typeChecker.typeToString(memberType)
-						)
-					} else {
-						throw _e
+				// Member is a field
+				} else if (hasBit(member.flags, ts.SymbolFlags.Property)) {
+					try {
+						let typeString = nimType(memberType)
+						fields.push(member.name + "*: " + typeString)
+					} catch (_e) {
+						let e:{} = _e
+						if (e instanceof UnusableType)
+							warn("Could not translate property " + member.name + " on class " + sym.name +
+								" because couldn't translate type " + typeChecker.typeToString(memberType)
+							)
+						else
+							throw _e
 					}
+
+				// Member is a method
+				} else if (hasBit(member.flags, ts.SymbolFlags.Method)) {
+					methods = methods.concat( translateProc(member, memberType, sym) )
+				
+				// Member is unsupported
+				} else {
+					warn("Could not figure out how to translate member", member.name, "of class", sym.name)
 				}
-
-			// Member is a method
-			} else if (hasBit(member.flags, ts.SymbolFlags.Method)) {
-				methods = methods.concat( translateProc(member, memberType, sym) )
-			
-			// Member is unsupported
-			} else {
-				warn("Could not figure out how to translate member", member.name, "of class", sym.name)
 			}
+
+			// Get superclass
+			// Neither "heritageClauses" nor "types" are exposed. CHEAT: 
+			let heritageClauses = (<any>sym.declarations[0]).heritageClauses
+			let inherit = heritageClauses ? heritageClauses[0].types[0].expression.text : null
+			let inheritString = inherit ? inherit : "RootObj"
+
+			// Get constructor
+			// FIXME: Produces garbage on inherited constructors
+			if (!foundConstructor)
+				methods.push(translateSingleConstructor(sym))
+
+			console.log("type " + identifierScrub(sym.name) + "* {." + importDirective(sym.name) + ".} = ref object of " + inheritString +
+				fields.map(field => "\n    " + field).join("") +
+				methods.map(method => "\n" + method).join(""))
+
+		// Unsupported
+		} else {
+			warn("Could not figure out how to translate symbol", sym.name, ":",
+					typeChecker.typeToString(type))
 		}
-
-		// Get superclass
-		// Neither "heritageClauses" nor "types" are exposed. CHEAT: 
-		let heritageClauses = (<any>sym.declarations[0]).heritageClauses
-		let inherit = heritageClauses ? heritageClauses[0].types[0].expression.text : null
-		let inheritString = inherit ? inherit : "RootObj"
-
-		// Get constructor
-		// FIXME: Produces garbage on inherited constructors
-		if (!foundConstructor)
-			methods.push(translateSingleConstructor(sym))
-
-		console.log("type " + identifierScrub(sym.name) + "* {." + importDirective(sym.name) + ".} = ref object of " + inheritString +
-			fields.map(field => "\n    " + field).join("") +
-			methods.map(method => "\n" + method).join(""))
-
-	// Unsupported
-	} else {
-		warn("Could not figure out how to translate symbol", sym.name, ":",
-				typeChecker.typeToString(type))
+	} catch (_e) {
+		let e:{} = _e
+		if (e instanceof GenConstructFail)
+			warn(e.message)
+		else
+			throw e
 	}
 }
+
+console.log( decls(generators) )
