@@ -13,6 +13,6 @@ QCONSOLELOG("three plus two is " & $QDEKZ.FUNC(QDEKZ.ONE))
 let four : QDEK1 = newQDEK1()
 let five : QDEK2 = newQDEK2("Concat ")
 
-QCONSOLELOG("three plus three is " & $four.FUNC(3))
+QCONSOLELOG("two plus three is " & $four.FUNC(3))
 
 QCONSOLELOG(five.FUNC2("working"))

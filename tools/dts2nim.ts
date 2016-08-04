@@ -69,7 +69,7 @@ function identifierScrub(id:string) : string {
 }
 
 function needIdentifierScrub(id:string) : boolean {
-	return id == identifierScrub(id)
+	return id != identifierScrub(id)
 }
 
 // Print {.importc.} with possible symbol correction
