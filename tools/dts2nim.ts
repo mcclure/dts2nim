@@ -60,6 +60,30 @@ function enumBitstring(Enum, value:number, tight = false) : string {
 // Are all bits in b set in a?
 function hasBit(a:number, b:number) { return (a&b)==b }
 
+// Convert TypeScript identifier to legal Nim identifier
+// FIXME: Leaves open possibility of collisions
+function identifierScrub(id:string) : string {
+	return id
+		.replace(/_{2,}/, "_")
+		.replace(/^_/, "")
+}
+
+function needIdentifierScrub(id:string) : boolean {
+	return id == identifierScrub(id)
+}
+
+// Print {.importc.} with possible symbol correction
+function importDirective(id:string, cpp:boolean = false) : string {
+	return "importc" + (cpp?"pp":"") + (id != identifierScrub(id) ? ":\"" + id + "\"" : "")
+}
+
+function capitalizeFirstLetter(str:string) : string {
+	return str.charAt(0).toUpperCase() + str.slice(1)
+}
+
+
+// Exceptions
+
 // Raised on Typescript type the converter script doesn't know how to convert
 class UnusableType extends Error {
 	constructor(public type: ts.Type) {
@@ -72,6 +96,13 @@ class GenConstructFail extends Error {
 
 // Generator classes
 
+// There is a series of Gen types which represent type items and know how to convert them to strings.
+// There is also a vendor (a factory) which knows how to create the Gen types given TypeScript objects.
+// The Gen constructors should take "pre-digested" data and do very little. Error checking should be
+// done in the vendor, not in the Gen.
+// If output types other than Nim are at some point supported, the gens will need to be subclassed,
+// and the vendor may or may not need to be significantly subclassed.
+
 interface GenVendor {
 	typeGen(tsType: ts.Type)
 }
@@ -80,37 +111,66 @@ interface Gen {
 	declString() : string
 }
 
-function decls(a: Gen[]) {
-	return a.map(g => g.declString()).join("\n")
+function genJoin(a:Gen[], joiner:string) {
+	return a.map(g => g.declString()).join(joiner)
+}
+
+function decls(a: Gen[])  { return genJoin(a, "\n") }
+function params(a: Gen[]) { return genJoin(a, ", ") }
+
+function genJoinPrefixed(a:Gen[], prefix:string) {
+	return a.map(g => prefix + g.declString()).join("")
 }
 
 interface TypeGen extends Gen {
 	typeString() : string
 }
 
-class VariableGen implements Gen {
-	type: TypeGen
-	constructor(public sym: ts.Symbol, tsType: ts.Type) {
-		try {
-			this.type = vendor.typeGen(tsType)
-			
-		} catch (_e) {
-			let e:{} = _e
-			if (e instanceof UnusableType)
-				throw new GenConstructFail("Could not translate variable "+sym.name+" because couldn't translate type "+typeChecker.typeToString(e.type))
-			else
-				throw e
-		}
-	}
+class IdentifierGen {
+	constructor(public name:string, public type: TypeGen) {}
+}
+
+class VariableGen extends IdentifierGen implements Gen {
 	declString() : string {
-		return `var ${identifierScrub(this.sym.name)}* {.${importDirective(this.sym.name)}, nodecl.}: `
-				+ this.type.typeString()
+		return `var ${identifierScrub(this.name)}* {.${importDirective(this.name)}, nodecl.}: `
+		     + this.type.typeString()
 	}
 }
 
-class FunctionGen implements Gen {
+class ParameterGen extends IdentifierGen implements Gen {
 	declString() : string {
-		throw new Error("TODO")
+		return `${identifierScrub(this.name)}: ${this.type.typeString()}`
+	}
+}
+
+class FieldGen extends IdentifierGen implements Gen {
+	declString() : string {
+		return `${identifierScrub(this.name)}*: ${this.type.typeString()}`
+		     + (needIdentifierScrub(this.name) ? ` {.importc:"${this.name}".}` : "")
+	}	
+}
+
+class SignatureGen implements Gen {
+	owner: ClassGen
+	constructor(public name: string, public params:ParameterGen[], public returnType: TypeGen) {}
+	declString() : string {
+		let fullParams = (this.owner ? [new ParameterGen("self", this.owner)] : []) 
+		               .concat( this.params )
+		return `proc ${identifierScrub(this.name)}*(${params(fullParams)}) : `
+		     + this.returnType.typeString()
+			 + ` {.${importDirective(this.name, !!this.owner)}.}`
+	}
+}
+
+class ConstructorGen implements Gen {
+	owner: ClassGen
+	constructor(public params:ParameterGen[]) {}
+	declString() : string {
+		let scrubbed = identifierScrub(this.owner.name)
+		let name = "new" + capitalizeFirstLetter(scrubbed)
+		// Note: params.length check is to work around a bug which is fixed in newest Nim beta
+		return `proc ${name}*(${params(this.params)}) : ${scrubbed}`
+			 + ` {.importcpp:"new ${this.owner.name}${this.params.length?"(@)":""}".}`
 	}
 }
 
@@ -121,11 +181,21 @@ class LiteralTypeGen implements TypeGen {
 	typeString() { return this.literal }
 }
 
-class ClassGen implements TypeGen {
-	constructor(public tsType: ts.Type, public name: string) {}
+class ClassGen implements TypeGen { // TODO: Make name optional?
+	// Inherit may be null
+	constructor(public name: string, public inherit:string, public fields: FieldGen[], public constructors: ConstructorGen[], public methods: SignatureGen[]) {
+		for (let constructor of constructors)
+			constructor.owner = this
+		for (let method of methods)
+			method.owner = this
+	}
 
 	declString() : string {
-		throw new Error("TODO")
+		let fullMethods = (this.constructors as Gen[]).concat( this.methods )
+		return `type ${identifierScrub(this.name)}* {.${importDirective(this.name)}.} = ref object of `
+		     + (this.inherit ? this.inherit : "RootObj")
+			 + genJoinPrefixed(this.fields, "\n    ")
+		     + genJoinPrefixed(fullMethods, "\n")
 	}
 	typeString() {
 		return this.name
@@ -133,6 +203,137 @@ class ClassGen implements TypeGen {
 }
 
 class GenVendor {
+	variableGen(sym: ts.Symbol, tsType: ts.Type) : VariableGen {
+		try {
+			return new VariableGen(sym.name, vendor.typeGen(tsType))
+			
+		} catch (_e) {
+			let e:{} = _e
+			if (e instanceof UnusableType)
+				throw new GenConstructFail("Could not translate variable "+sym.name+" because couldn't translate type "+typeChecker.typeToString(e.type))
+			else
+				throw e
+		}
+	}
+
+	paramsGen(syms: ts.Symbol[]) : ParameterGen[] {
+		return syms.map(sym =>
+			new ParameterGen(sym.name, this.typeGen(typeChecker.getTypeOfSymbolAtLocation(sym, sourceFile.endOfFileToken)))
+		)
+	}
+
+	signatureGen(sym: ts.Symbol, callSignature: ts.Signature) : SignatureGen {
+		return new SignatureGen(sym.name, this.paramsGen(callSignature.getParameters()), this.typeGen(callSignature.getReturnType()))
+	}
+
+	functionGen(sym: ts.Symbol, tsType: ts.Type) : SignatureGen[] {
+		let result: SignatureGen[] = []
+		let counter = 0
+		for (let callSignature of tsType.getCallSignatures()) {
+			try {
+				counter++
+				result.push( this.signatureGen(sym, callSignature) )
+			} catch (e) {
+				if (e instanceof UnusableType)
+					warn(`Could not translate function ${sym.name}`
+						+ (counter > 0 ? `, call signature #${counter}` : "")
+						+ ` because tried to translate ${typeChecker.typeToString(tsType)}`
+						+ ` but couldn't translate type ${typeChecker.typeToString(e.type)}`
+					)
+				else
+					throw e
+			}
+		}
+		return result
+	}
+
+	classGen(tsType: ts.Type) : TypeGen {
+		let fields : FieldGen[] = []
+		let methods: SignatureGen[] = []
+		let constructors: ConstructorGen[] = []
+		let foundConstructors = 0
+		let sym = tsType.symbol
+		let name = sym.name
+
+		// Iterate over class members
+		// Public interface for SymbolTable lets you look up keys but not iterate them. CHEAT:
+		for (let key in <any>sym.members) {
+			let member = sym.members[key]
+			let memberType = typeChecker.getTypeOfSymbolAtLocation(member, sourceFile.endOfFileToken)
+			
+			// Member is a constructor
+			if (hasBit(member.flags, ts.SymbolFlags.Constructor)) {
+				for (let declaration of member.declarations) {
+					foundConstructors++
+					try {
+						constructors.push( new ConstructorGen( 
+							// Parameters exist on Delcaration but are not publicly exposed. CHEAT:
+							this.paramsGen( (declaration as any).parameters.map(node => node.symbol) )
+						) )
+					} catch (_e) {
+						let e:{} = _e
+						if (e instanceof UnusableType)
+							warn(`Could not translate constructor #${foundConstructors} on class ${name}`
+							   + ` because couldn't translate type ${typeChecker.typeToString(e.type)}`
+							)
+						else
+							throw _e
+					}
+				}
+
+			// Member is a field
+			} else if (hasBit(member.flags, ts.SymbolFlags.Property)) {
+				try {
+					fields.push(new FieldGen(member.name, this.typeGen(memberType)))
+				} catch (_e) {
+					let e:{} = _e
+					if (e instanceof UnusableType)
+						warn(`Could not translate property ${member.name} on class ${name}`
+						  +  `because couldn't translate type ${typeChecker.typeToString(e.type)}`
+						)
+					else
+						throw _e
+				}
+
+			// Member is a method
+			} else if (hasBit(member.flags, ts.SymbolFlags.Method)) {
+				let counter = 0
+				for (let callSignature of memberType.getCallSignatures()) {
+					try {
+						counter++
+						methods.push( this.signatureGen(member, callSignature) )
+					} catch (_e) {
+						let e:{} = _e
+						if (e instanceof UnusableType)
+							warn(`Could not translate method ${sym.name} on class $name}`
+								+ (counter > 0 ? `, call signature #${counter}` : "")
+								+ ` because tried to translate ${typeChecker.typeToString(tsType)}`
+								+ ` but couldn't translate type ${typeChecker.typeToString(e.type)}`
+								)
+						else
+							throw _e
+					}
+				}
+
+			// Member is unsupported
+			} else {
+				warn(`Could not figure out how to translate member ${member.name} of class ${sym.name}`)
+			}
+		}
+
+		// Get superclass
+		// Neither "heritageClauses" nor "types" are exposed. CHEAT: 
+		let heritageClauses = (<any>sym.declarations[0]).heritageClauses
+		let inherit = heritageClauses ? heritageClauses[0].types[0].expression.text : null
+
+		// Get constructor
+		// FIXME: Produces garbage on inherited constructors
+		if (!foundConstructors)
+			constructors.push(new ConstructorGen([]))
+
+		return new ClassGen(name, inherit, fields, constructors, methods)
+	}
+
 	typeGen(tsType: ts.Type) : TypeGen {
 		if (tsType.flags & ts.TypeFlags.Number) // FIXME: Numberlike?
 			return new LiteralTypeGen("float")
@@ -141,21 +342,14 @@ class GenVendor {
 		if (tsType.flags & ts.TypeFlags.Void)
 			return new LiteralTypeGen("void")
 		if ((tsType.flags & ts.TypeFlags.Class) && tsType.symbol)
-			return new ClassGen(tsType, tsType.symbol.name)
+			return this.classGen(tsType)
 		throw new UnusableType(tsType)
 	}
-
-	variableGen(sym: ts.Symbol, tsType: ts.Type) {
-		return new VariableGen(sym, tsType)
-	}
 }
+
+// Process input
 
 let vendor = new GenVendor()
-
-// Get Nim-source string corresponding to TypeScript type
-function nimType(type: ts.Type) : string {
-	return vendor.typeGen(type).typeString()
-}
 
 // Prints to stderr, suppressed if -q option given
 let warn = commander.quiet ? function (...X) {} : console.warn.bind(console)
@@ -176,92 +370,6 @@ function debugVerboseEpilogue(obj:any) : string {
 	if (!commander.debugVerbose)
 		return ""
 	return ", " + linePrefix(util.inspect(obj), "#         ", 1)
-}
-
-// Convert TypeScript identifier to legal Nim identifier
-// FIXME: Leaves open possibility of collisions
-function identifierScrub(id:string) : string {
-	return id
-		.replace(/_{2,}/, "_")
-		.replace(/^_/, "")
-}
-
-// Print {.importc.} with possible symbol correction
-function importDirective(id:string, cpp:boolean = false) : string {
-	return "importc" + (cpp?"pp":"") + (id != identifierScrub(id) ? ":\"" + id + "\"" : "")
-}
-
-function capitalizeFirstLetter(str:string) : string {
-	return str.charAt(0).toUpperCase() + str.slice(1)
-}
-
-function constructorNameForClass(str:string) : string {
-	return "new" + capitalizeFirstLetter(str)
-}
-
-// Convert a params list to
-function translateParameters(params:ts.Symbol[], owner: ts.Symbol = null) : string[] {
-	let paramStrings = params.map(param =>
-				""+identifierScrub(param.name) + ":" + nimType(typeChecker.getTypeOfSymbolAtLocation(param, sourceFile.endOfFileToken))
-			)
-	if (owner) {
-		// Notice nimType is not called. It seems certain this will break in some situation.
-		let ownerTypeString = identifierScrub(owner.name)
-		paramStrings = ["self:"+ownerTypeString].concat(paramStrings)
-	}
-	return paramStrings
-}
-
-// Convert TypeScript symbol defining a function to a Nim source string
-// If "owner" present, this is a method, otherwise it's a function
-function translateProc(func: ts.Symbol, funcType: ts.Type, owner: ts.Symbol = null) : string[] {
-	let result = []
-	let counter = 0
-	let name = identifierScrub(func.name)
-
-	for (let callSignature of funcType.getCallSignatures()) {
-		try {
-			let paramStrings = translateParameters(callSignature.getParameters(), owner)
-			let returnTypeString = nimType(callSignature.getReturnType())
-			
-			result.push("proc " + name + "*(" +
-				paramStrings.join(", ") + "): " + returnTypeString +
-				" {." + importDirective(func.name, !!owner) + ".}")
-		} catch (_e) {
-			let e:{} = _e
-			if (e instanceof UnusableType)
-				warn("Could not translate "
-					+ (owner
-						? `method ${func.name} for class ${owner.name}`
-						: `function ${func.name}`)
-					+ (counter > 0 ? `, call signature #${counter}` : "")
-					+ ` because tried to translate ${typeChecker.typeToString(funcType)}`
-					+ ` but couldn't translate type ${typeChecker.typeToString(e.type)}`
-				)
-			else
-				throw e
-		}
-		counter++
-	}
-	return result
-}
-
-// Given a symbol name and optionally a node declaration from a Constructor symbol, produce a constructor declaration
-// Public interface for ts.Declaration doesn't expose parameters. CHEAT:
-function translateSingleConstructor(owner: ts.Symbol, declaration:any = null) {
-	let name = constructorNameForClass(owner.name)
-	let params = declaration ?
-		translateParameters(declaration.parameters.map(node => node.symbol)) :
-		[]
-
-	// Notice again the problem with owner.name mentioned in translateParameters
-	return "proc " + name + "*(" + params.join(", ") + ") : " + identifierScrub(owner.name) +
-		" {.importcpp:\"new " +  owner.name + (params.length?"(@)":"") + "\".}"
-}
-
-// Create constructor for class. May have multiple signatures (I assume this is what 'declaration' is?)
-function translateConstructor(owner: ts.Symbol, constructor: ts.Symbol) : string[] {
-	return constructor.declarations.map(declaration => translateSingleConstructor(owner, declaration))
 }
 
 // Emit symbols
@@ -288,67 +396,11 @@ for (let sym of typeChecker.getSymbolsInScope(sourceFile.endOfFileToken, 0xFFFFF
 
 		// Function
 		} else if (hasBit(sym.flags, ts.SymbolFlags.Function)) {
-			for (let str of translateProc(sym, type))
-				console.log(str)
+			generators = generators.concat( vendor.functionGen(sym, type) )
 		
 		// Class
 		} else if (hasBit(sym.flags, ts.SymbolFlags.Class)) {
-			let fields : string[] = []
-			let methods: string[] = []
-			let constructorName = "new" + capitalizeFirstLetter(sym.name)
-			let foundConstructor = false
-
-			// Iterate over class members
-			// Public interface for SymbolTable lets you look up keys but not iterate them. CHEAT:
-			for (let key in <any>sym.members) {
-				let member = sym.members[key]
-				let memberType = typeChecker.getTypeOfSymbolAtLocation(member, sourceFile.endOfFileToken)
-				
-				// Member is a constructor
-				if (hasBit(member.flags, ts.SymbolFlags.Constructor)) {
-					let constructors = translateConstructor(sym, member)
-					foundConstructor = foundConstructor || !!constructors.length
-					methods = methods.concat( constructors )
-
-				// Member is a field
-				} else if (hasBit(member.flags, ts.SymbolFlags.Property)) {
-					try {
-						let typeString = nimType(memberType)
-						fields.push(member.name + "*: " + typeString)
-					} catch (_e) {
-						let e:{} = _e
-						if (e instanceof UnusableType)
-							warn("Could not translate property " + member.name + " on class " + sym.name +
-								" because couldn't translate type " + typeChecker.typeToString(memberType)
-							)
-						else
-							throw _e
-					}
-
-				// Member is a method
-				} else if (hasBit(member.flags, ts.SymbolFlags.Method)) {
-					methods = methods.concat( translateProc(member, memberType, sym) )
-				
-				// Member is unsupported
-				} else {
-					warn("Could not figure out how to translate member", member.name, "of class", sym.name)
-				}
-			}
-
-			// Get superclass
-			// Neither "heritageClauses" nor "types" are exposed. CHEAT: 
-			let heritageClauses = (<any>sym.declarations[0]).heritageClauses
-			let inherit = heritageClauses ? heritageClauses[0].types[0].expression.text : null
-			let inheritString = inherit ? inherit : "RootObj"
-
-			// Get constructor
-			// FIXME: Produces garbage on inherited constructors
-			if (!foundConstructor)
-				methods.push(translateSingleConstructor(sym))
-
-			console.log("type " + identifierScrub(sym.name) + "* {." + importDirective(sym.name) + ".} = ref object of " + inheritString +
-				fields.map(field => "\n    " + field).join("") +
-				methods.map(method => "\n" + method).join(""))
+			generators.push( vendor.classGen(type) )
 
 		// Unsupported
 		} else {
