@@ -84,14 +84,22 @@ function capitalizeFirstLetter(str:string) : string {
 
 // Exceptions
 
+// This is needed to work around an issue in Typescript's ES5 generator
+class CustomError extends Error {
+	constructor(message:string) {
+		super()
+		this.message = message
+	}
+}
+
 // Raised on Typescript type the converter script doesn't know how to convert
-class UnusableType extends Error {
+class UnusableType extends CustomError {
 	constructor(public type: ts.Type) {
 		super("Cannot represent type: " + typeChecker.typeToString(type))
 	}
 }
 
-class GenConstructFail extends Error {
+class GenConstructFail extends CustomError {	
 }
 
 // Generator classes
@@ -393,7 +401,7 @@ for (let sym of typeChecker.getSymbolsInScope(sourceFile.endOfFileToken, 0xFFFFF
 
 	// Variable
 	try {
-		if (hasBit(sym.flags, ts.SymbolFlags.BlockScopedVariable)) {
+		if (hasBit(sym.flags, ts.SymbolFlags.BlockScopedVariable) || hasBit(sym.flags, ts.SymbolFlags.FunctionScopedVariable)) {
 			generators.push( vendor.variableGen(sym, type) )
 
 		// Function
