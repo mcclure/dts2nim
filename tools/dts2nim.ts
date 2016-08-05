@@ -341,6 +341,8 @@ class GenVendor {
 			return new LiteralTypeGen("cstring")
 		if (tsType.flags & ts.TypeFlags.Void)
 			return new LiteralTypeGen("void")
+		if (tsType.flags & ts.TypeFlags.Boolean)
+			return new LiteralTypeGen("bool")
 		if ((tsType.flags & ts.TypeFlags.Class) && tsType.symbol)
 			return this.classGen(tsType)
 		throw new UnusableType(tsType)
