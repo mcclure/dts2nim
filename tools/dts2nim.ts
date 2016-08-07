@@ -5,7 +5,7 @@
 // - $ becomes "zz"
 // - Groups of two or more underscores become single underscores
 // - Underscores at the start of a symbol become "z"
-// - Nim reserved words (only "type" currently) get x-prefixed
+// - Nim reserved words (only "type" "end" "from" "when" currently) get x-prefixed
 
 import ts = require("typescript")
 import util = require("util")
@@ -49,7 +49,7 @@ console.log()
 // Support
 
 let blacklist : {[key:string] : boolean} = {} // TODO: Could I just use Set()?
-for (let key of ["Object", "NodeList", "Array", "ArrayConstructor"])
+for (let key of ["NodeList", "Array", "ArrayConstructor"])
 	blacklist[key] = true
 
 // Assume enum is a bitfield, print all relevant bits.
@@ -85,6 +85,12 @@ function identifierScrub(id:string) : string {
 		id = "z" + capitalizeFirstLetter(id.slice(1))
 	if (id == "type")
 		id = "xType"
+	else if (id == "end")
+		id = "xEnd"
+	else if (id == "from")
+		id = "xFrom"
+	else if (id == "when")
+		id = "xWhen"
 	return id
 }
 
@@ -250,6 +256,7 @@ class ClassGen implements TypeGen { // TODO: Make name optional?
 	constructors: ConstructorGen[]
 	methods: SignatureGen[]
 	inited: boolean
+	invalid: boolean
 	constructor(public name: string, public abstract: boolean) {}
 	init(inherit:ClassGen, fields: FieldGen[], constructors: ConstructorGen[], methods: SignatureGen[]) {
 		this.inherit = inherit
@@ -337,8 +344,12 @@ class GenVendor {
 
 	classGen(sym: ts.Symbol, abstract = false) : TypeGen {
 		let name = sym.name
-		if (this.classes[name]) // FIXME: will freak out on "prototype"
-			return this.classes[name]
+		let already = this.classes[name]
+		if (already) { // FIXME: will freak out on "prototype"
+			if (already.invalid)
+				throw new GenConstructFail("Tried to reuse unbuildable type") // FIXME: Should be an UnusableType
+			return already
+		}
 
 		if (blacklist[name]) // FIXME: Is this necessary?
 			throw new GenConstructFail("Refusing to translate blacklisted class " + name)
@@ -346,102 +357,107 @@ class GenVendor {
 		let result = new ClassGen(name, abstract)
 		this.classes[name] = result
 
-		let fields : FieldGen[] = []
-		let methods: SignatureGen[] = []
-		let constructors: ConstructorGen[] = []
-		let foundConstructors = 0
+		try {
+			let fields : FieldGen[] = []
+			let methods: SignatureGen[] = []
+			let constructors: ConstructorGen[] = []
+			let foundConstructors = 0
 
-		// Iterate over class members
-		// Public interface for SymbolTable lets you look up keys but not iterate them. CHEAT:
-		for (let key in <any>sym.members) {
-			let member = sym.members[key]
-			let memberType = typeChecker.getTypeOfSymbolAtLocation(member, sourceFile.endOfFileToken)
-			
-			// Member is a constructor
-			if (hasBit(member.flags, ts.SymbolFlags.Constructor)) {
-				for (let declaration of member.declarations) {
-					foundConstructors++
+			// Iterate over class members
+			// Public interface for SymbolTable lets you look up keys but not iterate them. CHEAT:
+			for (let key in <any>sym.members) {
+				let member = sym.members[key]
+				let memberType = typeChecker.getTypeOfSymbolAtLocation(member, sourceFile.endOfFileToken)
+				
+				// Member is a constructor
+				if (hasBit(member.flags, ts.SymbolFlags.Constructor)) {
+					for (let declaration of member.declarations) {
+						foundConstructors++
+						try {
+							constructors.push( new ConstructorGen( 
+								// Parameters exist on Delcaration but are not publicly exposed. CHEAT:
+								this.paramsGen( (declaration as any).parameters.map(node => node.symbol) )
+							) )
+						} catch (_e) {
+							let e:{} = _e
+							if (e instanceof UnusableType)
+								warn(`Could not translate constructor #${foundConstructors} on class ${name}`
+								   + ` because couldn't translate type ${typeChecker.typeToString(e.type)}`
+								)
+							else
+								throw _e
+						}
+					}
+
+				// Member is a field
+				} else if (hasBit(member.flags, ts.SymbolFlags.Property)) {
 					try {
-						constructors.push( new ConstructorGen( 
-							// Parameters exist on Delcaration but are not publicly exposed. CHEAT:
-							this.paramsGen( (declaration as any).parameters.map(node => node.symbol) )
-						) )
+						fields.push(new FieldGen(member.name, this.typeGen(memberType)))
 					} catch (_e) {
 						let e:{} = _e
 						if (e instanceof UnusableType)
-							warn(`Could not translate constructor #${foundConstructors} on class ${name}`
-							   + ` because couldn't translate type ${typeChecker.typeToString(e.type)}`
+							warn(`Could not translate property ${member.name} on class ${name}`
+							  +  `because couldn't translate type ${typeChecker.typeToString(e.type)}`
 							)
 						else
 							throw _e
 					}
-				}
 
-			// Member is a field
-			} else if (hasBit(member.flags, ts.SymbolFlags.Property)) {
-				try {
-					fields.push(new FieldGen(member.name, this.typeGen(memberType)))
-				} catch (_e) {
-					let e:{} = _e
-					if (e instanceof UnusableType)
-						warn(`Could not translate property ${member.name} on class ${name}`
-						  +  `because couldn't translate type ${typeChecker.typeToString(e.type)}`
-						)
-					else
-						throw _e
-				}
-
-			// Member is a method
-			} else if (hasBit(member.flags, ts.SymbolFlags.Method)) {
-				let counter = 0
-				for (let callSignature of memberType.getCallSignatures()) {
-					try {
-						counter++
-						methods.push( this.signatureGen(member, callSignature) )
-					} catch (_e) {
-						let e:{} = _e
-						if (e instanceof UnusableType)
-							warn(`Could not translate method ${sym.name} on class $name}`
-								+ (counter > 0 ? `, call signature #${counter}` : "")
-								+ ` because tried to translate ${typeChecker.typeToString(memberType)}`
-								+ ` but couldn't translate type ${typeChecker.typeToString(e.type)}`
-								)
-						else
-							throw _e
+				// Member is a method
+				} else if (hasBit(member.flags, ts.SymbolFlags.Method)) {
+					let counter = 0
+					for (let callSignature of memberType.getCallSignatures()) {
+						try {
+							counter++
+							methods.push( this.signatureGen(member, callSignature) )
+						} catch (_e) {
+							let e:{} = _e
+							if (e instanceof UnusableType)
+								warn(`Could not translate method ${sym.name} on class $name}`
+									+ (counter > 0 ? `, call signature #${counter}` : "")
+									+ ` because tried to translate ${typeChecker.typeToString(memberType)}`
+									+ ` but couldn't translate type ${typeChecker.typeToString(e.type)}`
+									)
+							else
+								throw _e
+						}
 					}
+
+				// Member is unsupported
+				} else {
+					warn(`Could not figure out how to translate member ${member.name} of class ${sym.name}`)
 				}
-
-			// Member is unsupported
-			} else {
-				warn(`Could not figure out how to translate member ${member.name} of class ${sym.name}`)
 			}
+
+			// Get superclass
+			// Neither "heritageClauses" nor "types" are exposed. CHEAT: 
+			let heritageClauses = (<any>sym.declarations[0]).heritageClauses
+			let inherit:ClassGen = null
+
+			if (heritageClauses) {
+				let inheritSymbol = typeChecker.getSymbolAtLocation(heritageClauses[0].types[0].expression)
+
+				let inheritName = inheritSymbol.name
+				if (blacklist[inheritName]) // FIXME: Is this necessary?
+					throw new GenConstructFail("Refusing to translate child of blacklisted class " + inheritName)
+
+				inherit = vendor.classGen(inheritSymbol) as ClassGen // FIXME: NO NO NO NO NO USING "AS" IS NOT OK HERE NO
+
+				if (!inherit.inited) // FIXME: THIS WILL SOMETIMES OCCUR IN LEGITIMATE CIRCUMSTANCES. FIX WHEN MUTUAL RECURSION BECOMES ALLOWED
+					throw new GenConstructFail(`${name} is mutually recursive with its ancestor ${inheritName} in a confusing way`)
+			}
+
+			// Get constructor
+			// FIXME: Produces garbage on inherited constructors
+			if (!foundConstructors)
+				constructors.push(new ConstructorGen([]))
+
+			result.init(inherit, fields, constructors, methods)
+			return result
+		} catch (e) {
+			result.invalid = true
+			throw e
 		}
-
-		// Get superclass
-		// Neither "heritageClauses" nor "types" are exposed. CHEAT: 
-		let heritageClauses = (<any>sym.declarations[0]).heritageClauses
-		let inherit:ClassGen = null
-
-		if (heritageClauses) {
-			let inheritSymbol = typeChecker.getSymbolAtLocation(heritageClauses[0].types[0].expression)
-
-			let inheritName = inheritSymbol.name
-			if (blacklist[inheritName]) // FIXME: Is this necessary?
-				throw new GenConstructFail("Refusing to translate child of blacklisted class " + inheritName)
-
-			inherit = vendor.classGen(inheritSymbol) as ClassGen // FIXME: NO NO NO NO NO USING "AS" IS NOT OK HERE NO
-
-			if (!inherit.inited) // FIXME: THIS WILL SOMETIMES OCCUR IN LEGITIMATE CIRCUMSTANCES. FIX WHEN MUTUAL RECURSION BECOMES ALLOWED
-				throw new GenConstructFail(`${name} is mutually recursive with its ancestor ${inheritName} in a confusing way`)
-		}
-
-		// Get constructor
-		// FIXME: Produces garbage on inherited constructors
-		if (!foundConstructors)
-			constructors.push(new ConstructorGen([]))
-
-		result.init(inherit, fields, constructors, methods)
-		return result
 	}
 
 	typeGen(tsType: ts.Type) : TypeGen {
@@ -503,20 +519,20 @@ for (let sym of typeChecker.getSymbolsInScope(sourceFile.endOfFileToken, 0xFFFFF
 
 	// Variable
 	try {
-		if (hasBit(sym.flags, ts.SymbolFlags.BlockScopedVariable) || hasBit(sym.flags, ts.SymbolFlags.FunctionScopedVariable)) {
-			generators.push( vendor.variableGen(sym, type) )
-
-		// Function
-		} else if (hasBit(sym.flags, ts.SymbolFlags.Function)) {
-			generators = generators.concat( vendor.functionGen(sym, type) )
-		
 		// Class
-		} else if (hasBit(sym.flags, ts.SymbolFlags.Class)) {
+		if (hasBit(sym.flags, ts.SymbolFlags.Class)) {
 			generators.push( vendor.classGen(type.symbol) )
 
 		// Interface
 		} else if (hasBit(sym.flags, ts.SymbolFlags.Interface)) {
 			generators.push( vendor.classGen(sym, true) )
+
+		} else if (hasBit(sym.flags, ts.SymbolFlags.BlockScopedVariable) || hasBit(sym.flags, ts.SymbolFlags.FunctionScopedVariable)) {
+			generators.push( vendor.variableGen(sym, type) )
+
+		// Function
+		} else if (hasBit(sym.flags, ts.SymbolFlags.Function)) {
+			generators = generators.concat( vendor.functionGen(sym, type) )
 
 		// Unsupported
 		} else {
