@@ -190,8 +190,8 @@ class LiteralTypeGen implements TypeGen {
 }
 
 class ClassGen implements TypeGen { // TODO: Make name optional?
-	// Inherit may be null
-	constructor(public name: string, public inherit:string, public fields: FieldGen[], public constructors: ConstructorGen[], public methods: SignatureGen[]) {
+	// Inherit may be null. "abstract" refers to a class that can be inherited from but not instantiated.
+	constructor(public name: string, public inherit:string, public fields: FieldGen[], public constructors: ConstructorGen[], public methods: SignatureGen[], public abstract: boolean) {
 		for (let constructor of constructors)
 			constructor.owner = this
 		for (let method of methods)
@@ -199,7 +199,10 @@ class ClassGen implements TypeGen { // TODO: Make name optional?
 	}
 
 	declString() : string {
-		let fullMethods = (this.constructors as Gen[]).concat( this.methods )
+		let fullMethods: Gen[] = this.methods
+		if (!this.abstract)
+			fullMethods = (this.constructors as Gen[]).concat( fullMethods )
+
 		return `type ${identifierScrub(this.name)}* {.${importDirective(this.name)}.} = ref object of `
 		     + (this.inherit ? this.inherit : "RootObj")
 			 + genJoinPrefixed(this.fields, "\n    ")
@@ -255,12 +258,11 @@ class GenVendor {
 		return result
 	}
 
-	classGen(tsType: ts.Type) : TypeGen {
+	classGen(sym: ts.Symbol, abstract = false) : TypeGen {
 		let fields : FieldGen[] = []
 		let methods: SignatureGen[] = []
 		let constructors: ConstructorGen[] = []
 		let foundConstructors = 0
-		let sym = tsType.symbol
 		let name = sym.name
 
 		// Iterate over class members
@@ -315,7 +317,7 @@ class GenVendor {
 						if (e instanceof UnusableType)
 							warn(`Could not translate method ${sym.name} on class $name}`
 								+ (counter > 0 ? `, call signature #${counter}` : "")
-								+ ` because tried to translate ${typeChecker.typeToString(tsType)}`
+								+ ` because tried to translate ${typeChecker.typeToString(memberType)}`
 								+ ` but couldn't translate type ${typeChecker.typeToString(e.type)}`
 								)
 						else
@@ -339,7 +341,7 @@ class GenVendor {
 		if (!foundConstructors)
 			constructors.push(new ConstructorGen([]))
 
-		return new ClassGen(name, inherit, fields, constructors, methods)
+		return new ClassGen(name, inherit, fields, constructors, methods, abstract)
 	}
 
 	typeGen(tsType: ts.Type) : TypeGen {
@@ -352,7 +354,7 @@ class GenVendor {
 		if (tsType.flags & ts.TypeFlags.Boolean)
 			return new LiteralTypeGen("bool")
 		if ((tsType.flags & ts.TypeFlags.Class) && tsType.symbol)
-			return this.classGen(tsType)
+			return this.classGen(tsType.symbol)
 		throw new UnusableType(tsType)
 	}
 }
@@ -410,7 +412,11 @@ for (let sym of typeChecker.getSymbolsInScope(sourceFile.endOfFileToken, 0xFFFFF
 		
 		// Class
 		} else if (hasBit(sym.flags, ts.SymbolFlags.Class)) {
-			generators.push( vendor.classGen(type) )
+			generators.push( vendor.classGen(type.symbol) )
+
+		// Interface
+		} else if (hasBit(sym.flags, ts.SymbolFlags.Interface)) {
+			generators.push( vendor.classGen(sym, true) )
 
 		// Unsupported
 		} else {
