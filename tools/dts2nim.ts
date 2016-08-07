@@ -245,16 +245,18 @@ class LiteralTypeGen implements TypeGen {
 
 class ClassGen implements TypeGen { // TODO: Make name optional?
 	// Inherit may be null. "abstract" refers to a class that can be inherited from but not instantiated.
-	inherit: string
+	inherit: ClassGen
 	fields: FieldGen[]
 	constructors: ConstructorGen[]
 	methods: SignatureGen[]
+	inited: boolean
 	constructor(public name: string, public abstract: boolean) {}
-	init(inherit:string, fields: FieldGen[], constructors: ConstructorGen[], methods: SignatureGen[]) {
+	init(inherit:ClassGen, fields: FieldGen[], constructors: ConstructorGen[], methods: SignatureGen[]) {
 		this.inherit = inherit
 		this.fields = fields
 		this.constructors = constructors
 		this.methods = methods
+		this.inited = true
 		for (let constructor of constructors)
 			constructor.owner = this
 		for (let method of methods)
@@ -267,7 +269,7 @@ class ClassGen implements TypeGen { // TODO: Make name optional?
 			fullMethods = (this.constructors as Gen[]).concat( fullMethods )
 
 		return `type ${identifierScrub(this.name)}* {.${importDirective(this.name)}.} = ref object of `
-		     + (this.inherit ? this.inherit : "RootObj")
+		     + (this.inherit ? identifierScrub(this.inherit.name) : "RootObj")
 			 + genJoinPrefixed(this.fields, "\n    ")
 		     + genJoinPrefixed(fullMethods, "\n")
 	}
@@ -276,9 +278,9 @@ class ClassGen implements TypeGen { // TODO: Make name optional?
 	}
 
 	depends() {
-		return arrayFilter(this.inherit).concat( concatAll(
+		return concatAll(
 			[this.fields, this.constructors, this.methods].map( x => allDepends(x) )
-		) )
+		).concat( this.inherit ? [this.inherit.dependKey()] : [] )
 	}
 	dependKey() { return this.name }
 }
@@ -418,10 +420,20 @@ class GenVendor {
 		// Get superclass
 		// Neither "heritageClauses" nor "types" are exposed. CHEAT: 
 		let heritageClauses = (<any>sym.declarations[0]).heritageClauses
-		let inherit = heritageClauses ? heritageClauses[0].types[0].expression.text : null
+		let inherit:ClassGen = null
 
-		if (blacklist[inherit]) // FIXME: Is this necessary?
-			throw new GenConstructFail("Refusing to translate child of blacklisted class " + inherit)
+		if (heritageClauses) {
+			let inheritSymbol = typeChecker.getSymbolAtLocation(heritageClauses[0].types[0].expression)
+
+			let inheritName = inheritSymbol.name
+			if (blacklist[inheritName]) // FIXME: Is this necessary?
+				throw new GenConstructFail("Refusing to translate child of blacklisted class " + inheritName)
+
+			inherit = vendor.classGen(inheritSymbol) as ClassGen // FIXME: NO NO NO NO NO USING "AS" IS NOT OK HERE NO
+
+			if (!inherit.inited) // FIXME: THIS WILL SOMETIMES OCCUR IN LEGITIMATE CIRCUMSTANCES. FIX WHEN MUTUAL RECURSION BECOMES ALLOWED
+				throw new GenConstructFail(`${name} is mutually recursive with its ancestor ${inheritName} in a confusing way`)
+		}
 
 		// Get constructor
 		// FIXME: Produces garbage on inherited constructors
