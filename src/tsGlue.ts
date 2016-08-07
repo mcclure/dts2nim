@@ -29,3 +29,11 @@ let QDEKZ = new QDEK2("3")
 function QCONSOLELOG(s:string) {
 	console.log(s)
 }
+
+let XGY : QDEK1[]
+
+class XQ1<T> {
+	T x;
+}
+
+let XQ2 : XQ1<number>

@@ -1,5 +1,11 @@
 // Takes an input ts file, converts types in final scope to Nim and outputs Nim file to stdout
 
+// Conversion rules:
+// - Constructors become newClassname()
+// - $ becomes "zz"
+// - Groups of two or more underscores become single underscores
+// - Underscores at the start of a symbol become "z"
+
 import ts = require("typescript")
 import util = require("util")
 let commander = require("commander")
@@ -41,6 +47,10 @@ console.log()
 
 // Support
 
+let blacklist : {[key:string] : boolean} = {} // TODO: Could I just use Set()?
+for (let key of ["Array", "ArrayConstructor"])
+	blacklist[key] = true
+
 // Assume enum is a bitfield, print all relevant bits.
 // If "tight", assume enum values are exact values, not masks.
 function enumBitstring(Enum, value:number, tight = false) : string {
@@ -65,16 +75,23 @@ function hasBit(a:number, b:number) { return (a&b)==b }
 function identifierScrub(id:string) : string {
 	return id
 		.replace(/_{2,}/, "_")
-		.replace(/^_/, "")
+		.replace(/^_/, "z")
+		.replace(/\$/, "zz")
 }
 
 function needIdentifierScrub(id:string) : boolean {
 	return id != identifierScrub(id)
 }
 
+// Print the symbol that goes inside the quotes for an importc or importcpp
+function importIdentifier(id:string) : string {
+	return id
+		.replace(/\$/, "$$$$")
+}
+
 // Print {.importc.} with possible symbol correction
 function importDirective(id:string, cpp:boolean = false) : string {
-	return "importc" + (cpp?"pp":"") + (id != identifierScrub(id) ? ":\"" + id + "\"" : "")
+	return "importc" + (cpp?"pp":"") + (id != identifierScrub(id) ? ":\"" + importIdentifier(id) + "\"" : "")
 }
 
 function capitalizeFirstLetter(str:string) : string {
@@ -153,8 +170,9 @@ class ParameterGen extends IdentifierGen implements Gen {
 
 class FieldGen extends IdentifierGen implements Gen {
 	declString() : string {
-		return `${identifierScrub(this.name)}*: ${this.type.typeString()}`
-		     + (needIdentifierScrub(this.name) ? ` {.importc:"${this.name}".}` : "")
+		return `${identifierScrub(this.name)}*`
+		     + (needIdentifierScrub(this.name) ? ` {.importc:"${importIdentifier(this.name)}".}` : "")
+		     + `: ${this.type.typeString()}`
 	}	
 }
 
@@ -178,7 +196,7 @@ class ConstructorGen implements Gen {
 		let name = "new" + capitalizeFirstLetter(scrubbed)
 		// Note: params.length check is to work around a bug which is fixed in newest Nim beta
 		return `proc ${name}*(${params(this.params)}) : ${scrubbed}`
-			 + ` {.importcpp:"new ${this.owner.name}${this.params.length?"(@)":""}".}`
+			 + ` {.importcpp:"new ${importIdentifier(this.owner.name)}${this.params.length?"(@)":""}".}`
 	}
 }
 
@@ -265,6 +283,9 @@ class GenVendor {
 		let foundConstructors = 0
 		let name = sym.name
 
+		if (blacklist[name]) // FIXME: Is this necessary?
+			throw new GenConstructFail("Refusing to translate blacklisted class " + name)
+
 		// Iterate over class members
 		// Public interface for SymbolTable lets you look up keys but not iterate them. CHEAT:
 		for (let key in <any>sym.members) {
@@ -335,6 +356,9 @@ class GenVendor {
 		// Neither "heritageClauses" nor "types" are exposed. CHEAT: 
 		let heritageClauses = (<any>sym.declarations[0]).heritageClauses
 		let inherit = heritageClauses ? heritageClauses[0].types[0].expression.text : null
+
+		if (blacklist[inherit]) // FIXME: Is this necessary?
+			throw new GenConstructFail("Refusing to translate child of blacklisted class " + inherit)
 
 		// Get constructor
 		// FIXME: Produces garbage on inherited constructors
