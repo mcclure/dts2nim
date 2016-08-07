@@ -98,6 +98,13 @@ function capitalizeFirstLetter(str:string) : string {
 	return str.charAt(0).toUpperCase() + str.slice(1)
 }
 
+function arrayFilter<T>(x: T) : T[] {
+	return x != null ? [x] : []
+}
+
+function concatAll<T>(x:T[][]) : T[] {
+	return [].concat.apply([], x)
+}
 
 // Exceptions
 
@@ -134,6 +141,13 @@ interface GenVendor {
 
 interface Gen {
 	declString() : string
+
+	depends() : string[] // TODO: Return a Gen[]
+	dependKey(): string  // Return the key you are described by in a dependency graph, or null
+}
+
+function allDepends(gens: Gen[]) : string[] {
+	return concatAll( gens.map( x => x.depends() ) )
 }
 
 function genJoin(a:Gen[], joiner:string) {
@@ -153,6 +167,9 @@ interface TypeGen extends Gen {
 
 class IdentifierGen {
 	constructor(public name:string, public type: TypeGen) {}
+
+	depends()   { return arrayFilter(this.type.dependKey()) }
+	dependKey() { return this.name } // FIXME: Could variables live without these?
 }
 
 class VariableGen extends IdentifierGen implements Gen {
@@ -186,10 +203,16 @@ class SignatureGen implements Gen {
 		     + this.returnType.typeString()
 			 + ` {.${importDirective(this.name, !!this.owner)}.}`
 	}
+
+	depends() {
+		return allDepends( this.params )
+			   .concat( arrayFilter(this.returnType.dependKey()) )
+	}
+	dependKey() { return this.name }
 }
 
 class ConstructorGen implements Gen {
-	owner: ClassGen
+	owner: ClassGen // Set by ClassGen.init
 	constructor(public params:ParameterGen[]) {}
 	declString() : string {
 		let scrubbed = identifierScrub(this.owner.name)
@@ -198,6 +221,11 @@ class ConstructorGen implements Gen {
 		return `proc ${name}*(${params(this.params)}) : ${scrubbed}`
 			 + ` {.importcpp:"new ${importIdentifier(this.owner.name)}${this.params.length?"(@)":""}".}`
 	}
+
+	depends() {
+		return allDepends( this.params )
+	}
+	dependKey() { return null } // Constructors dont stand alone
 }
 
 class LiteralTypeGen implements TypeGen {
@@ -205,11 +233,23 @@ class LiteralTypeGen implements TypeGen {
 
 	declString() : string { throw new Error("Tried to emit a declaration for a a core type") }
 	typeString() { return this.literal }
+
+	depends() { return [] }
+	dependKey() { return null }
 }
 
 class ClassGen implements TypeGen { // TODO: Make name optional?
 	// Inherit may be null. "abstract" refers to a class that can be inherited from but not instantiated.
-	constructor(public name: string, public inherit:string, public fields: FieldGen[], public constructors: ConstructorGen[], public methods: SignatureGen[], public abstract: boolean) {
+	inherit: string
+	fields: FieldGen[]
+	constructors: ConstructorGen[]
+	methods: SignatureGen[]
+	constructor(public name: string, public abstract: boolean) {}
+	init(inherit:string, fields: FieldGen[], constructors: ConstructorGen[], methods: SignatureGen[]) {
+		this.inherit = inherit
+		this.fields = fields
+		this.constructors = constructors
+		this.methods = methods
 		for (let constructor of constructors)
 			constructor.owner = this
 		for (let method of methods)
@@ -229,9 +269,21 @@ class ClassGen implements TypeGen { // TODO: Make name optional?
 	typeString() {
 		return this.name
 	}
+
+	depends() {
+		return arrayFilter(this.inherit).concat( concatAll(
+			[this.fields, this.constructors, this.methods].map( x => allDepends(x) )
+		) )
+	}
+	dependKey() { return this.name }
 }
 
 class GenVendor {
+	classes: {[name:string] : ClassGen}
+	constructor() {
+		this.classes = {}
+	}
+
 	variableGen(sym: ts.Symbol, tsType: ts.Type) : VariableGen {
 		try {
 			return new VariableGen(sym.name, vendor.typeGen(tsType))
@@ -277,14 +329,19 @@ class GenVendor {
 	}
 
 	classGen(sym: ts.Symbol, abstract = false) : TypeGen {
+		let name = sym.name
+		if (this.classes[name]) // FIXME: will freak out on "prototype"
+			return this.classes[name]
+
+		if (blacklist[name]) // FIXME: Is this necessary?
+			throw new GenConstructFail("Refusing to translate blacklisted class " + name)
+
+		let result = new ClassGen(name, abstract)
+
 		let fields : FieldGen[] = []
 		let methods: SignatureGen[] = []
 		let constructors: ConstructorGen[] = []
 		let foundConstructors = 0
-		let name = sym.name
-
-		if (blacklist[name]) // FIXME: Is this necessary?
-			throw new GenConstructFail("Refusing to translate blacklisted class " + name)
 
 		// Iterate over class members
 		// Public interface for SymbolTable lets you look up keys but not iterate them. CHEAT:
@@ -365,7 +422,8 @@ class GenVendor {
 		if (!foundConstructors)
 			constructors.push(new ConstructorGen([]))
 
-		return new ClassGen(name, inherit, fields, constructors, methods, abstract)
+		result.init(inherit, fields, constructors, methods)
+		return result
 	}
 
 	typeGen(tsType: ts.Type) : TypeGen {
