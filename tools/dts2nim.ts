@@ -5,6 +5,7 @@
 // - $ becomes "zz"
 // - Groups of two or more underscores become single underscores
 // - Underscores at the start of a symbol become "z"
+// - Nim reserved words (only "type" currently) get x-prefixed
 
 import ts = require("typescript")
 import util = require("util")
@@ -48,7 +49,7 @@ console.log()
 // Support
 
 let blacklist : {[key:string] : boolean} = {} // TODO: Could I just use Set()?
-for (let key of ["Array", "ArrayConstructor"])
+for (let key of ["Object", "NodeList", "Array", "ArrayConstructor"])
 	blacklist[key] = true
 
 // Assume enum is a bitfield, print all relevant bits.
@@ -70,13 +71,21 @@ function enumBitstring(Enum, value:number, tight = false) : string {
 // Are all bits in b set in a?
 function hasBit(a:number, b:number) { return (a&b)==b }
 
+function capitalizeFirstLetter(str:string) : string {
+	return str.charAt(0).toUpperCase() + str.slice(1)
+}
+
 // Convert TypeScript identifier to legal Nim identifier
 // FIXME: Leaves open possibility of collisions
 function identifierScrub(id:string) : string {
-	return id
+	id = id
 		.replace(/_{2,}/, "_")
-		.replace(/^_/, "z")
 		.replace(/\$/, "zz")
+	if (id[0] == '_')
+		id = "z" + capitalizeFirstLetter(id.slice(1))
+	if (id == "type")
+		id = "xType"
+	return id
 }
 
 function needIdentifierScrub(id:string) : boolean {
@@ -92,10 +101,6 @@ function importIdentifier(id:string) : string {
 // Print {.importc.} with possible symbol correction
 function importDirective(id:string, cpp:boolean = false) : string {
 	return "importc" + (cpp?"pp":"") + (id != identifierScrub(id) ? ":\"" + importIdentifier(id) + "\"" : "")
-}
-
-function capitalizeFirstLetter(str:string) : string {
-	return str.charAt(0).toUpperCase() + str.slice(1)
 }
 
 function arrayFilter<T>(x: T) : T[] {
@@ -337,6 +342,7 @@ class GenVendor {
 			throw new GenConstructFail("Refusing to translate blacklisted class " + name)
 
 		let result = new ClassGen(name, abstract)
+		this.classes[name] = result
 
 		let fields : FieldGen[] = []
 		let methods: SignatureGen[] = []
@@ -514,4 +520,32 @@ for (let sym of typeChecker.getSymbolsInScope(sourceFile.endOfFileToken, 0xFFFFF
 	}
 }
 
-console.log( decls(generators) )
+// We now have a list of all symbols in alphabetical order. We need to sort them in order of
+// relative dependency, and if any of the symbols are mutually recursive types we need to know that
+// too. The tarjan algorithm (strongly connected components, reverse topological sort) does both
+let graphlib = require("graphlib")
+let dependencies = new graphlib.Graph()
+for (let gen of generators) {
+	let key = gen.dependKey()
+	dependencies.setNode(key, gen)
+	for (let dep of gen.depends())
+		dependencies.setEdge(key, dep)
+}
+
+//for(let group of graphlib.alg.tarjan(dependencies))
+//	console.log(group, dependencies.node(group[0]) != null)
+
+let groupedGenerators : Gen[][] =
+	graphlib.alg.tarjan(dependencies)
+	.map( scc => scc.map( id => dependencies.node(id) ) )
+
+let sortedGenerators : Gen[] = []
+for (let group of groupedGenerators) {
+	if (group.length > 1)
+		warn("Can't translate mutually recursive types, so ignoring: "
+		   + (group.map(x => x.dependKey())).join(", ")) // This is a misuse of dependKey
+	else if (group[0]) // TODO: Delete nodes that depend on nonexistent things
+		sortedGenerators.push(group[0])
+}
+
+console.log( decls(sortedGenerators) )

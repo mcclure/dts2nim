@@ -33,7 +33,20 @@ function QCONSOLELOG(s:string) {
 let XGY : QDEK1[]
 
 class XQ1<T> {
-	T x;
+	x: T
 }
 
 let XQ2 : XQ1<number>
+
+class XREC1 {
+	a1: XREC2
+}
+
+class XREC2 {
+	constructor(public a2 : XREC1) {
+		a2.a1 = this
+	}
+}
+
+// TODO: Right now we erase mutually exclusive types, but pass through variables typed as one of the erased types 
+// let XR = new XREC2(new XREC1())

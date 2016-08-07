@@ -3,6 +3,7 @@
     "//": "Used by dts2nim",
     "commander": "^2.9.0",
     "commander.js-error": "^1.1.0",
+    "graphlib": "^2.1.1",
     "typescript": "^1.8.10"
   }
 }
