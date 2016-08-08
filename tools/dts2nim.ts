@@ -49,8 +49,13 @@ console.log()
 // Support
 
 let blacklist : {[key:string] : boolean} = {} // TODO: Could I just use Set()?
-for (let key of ["NodeList", "Array", "ArrayConstructor"])
+for (let key of ["class:NodeList", "class:Array", "class:ArrayConstructor",
+	"field:Element.webkitRequestFullScreen", "field:HTMLVideoElement.webkitEnterFullscreen",
+	"field:HTMLVideoElement.webkitExitFullscreen"])
 	blacklist[key] = true
+function blacklisted(nspace:string, name:string) : boolean {
+	return blacklist[name] || blacklist[nspace + ":" + name]
+}
 
 // Assume enum is a bitfield, print all relevant bits.
 // If "tight", assume enum values are exact values, not masks.
@@ -75,6 +80,16 @@ function capitalizeFirstLetter(str:string) : string {
 	return str.charAt(0).toUpperCase() + str.slice(1)
 }
 
+let reserved : {[name:string] : boolean} = {}
+for (let name of ["addr", "and", "as", "asm", "atomic", "bind", "block", "break", "case", "cast",
+	"concept", "const", "continue", "converter", "defer", "discard", "distinct", "div", "do",
+	"elif", "else", "end", "enum", "except", "export", "finally", "for", "from", "func", "generic",
+	"if", "import", "in", "include", "interface", "is", "isnot", "iterator", "let", "macro",
+	"method", "mixin", "mod", "nil", "not", "notin", "object", "of", "or", "out", "proc", "ptr",
+	"raise", "ref", "return", "shl", "shr", "static", "template", "try", "tuple", "type", "using",
+	"var", "when", "while", "with", "without", "xor", "yield"])
+	reserved[name] = true
+
 // Convert TypeScript identifier to legal Nim identifier
 // FIXME: Leaves open possibility of collisions
 function identifierScrub(id:string) : string {
@@ -83,14 +98,8 @@ function identifierScrub(id:string) : string {
 		.replace(/\$/, "zz")
 	if (id[0] == '_')
 		id = "z" + capitalizeFirstLetter(id.slice(1))
-	if (id == "type")
-		id = "xType"
-	else if (id == "end")
-		id = "xEnd"
-	else if (id == "from")
-		id = "xFrom"
-	else if (id == "when")
-		id = "xWhen"
+	if (reserved[id])
+		id = "x" + capitalizeFirstLetter(id.slice(1))
 	return id
 }
 
@@ -292,6 +301,15 @@ class ClassGen implements TypeGen { // TODO: Make name optional?
 	dependKey() { return this.name }
 }
 
+function chainHasField(gen:ClassGen, name:string) : boolean {
+	if (!gen)
+		return false
+	for(let field of gen.fields)
+		if (field.name == name)
+			return true
+	return chainHasField(gen.inherit, name)
+}
+
 class GenVendor {
 	classes: {[name:string] : ClassGen}
 	constructor() {
@@ -300,6 +318,9 @@ class GenVendor {
 
 	variableGen(sym: ts.Symbol, tsType: ts.Type) : VariableGen {
 		try {
+			if (blacklisted("variable", sym.name))
+				throw new GenConstructFail(`Refusing to translate blacklisted variable ${sym.name}`)
+
 			return new VariableGen(sym.name, vendor.typeGen(tsType))
 			
 		} catch (_e) {
@@ -322,6 +343,9 @@ class GenVendor {
 	}
 
 	functionGen(sym: ts.Symbol, tsType: ts.Type) : SignatureGen[] {
+		if (blacklisted("variable", sym.name))
+			throw new GenConstructFail(`Refusing to translate blacklisted function ${sym.name}`)
+
 		let result: SignatureGen[] = []
 		let counter = 0
 		for (let callSignature of tsType.getCallSignatures()) {
@@ -351,7 +375,7 @@ class GenVendor {
 			return already
 		}
 
-		if (blacklist[name]) // FIXME: Is this necessary?
+		if (blacklisted("class", name))
 			throw new GenConstructFail("Refusing to translate blacklisted class " + name)
 
 		let result = new ClassGen(name, abstract)
@@ -362,6 +386,22 @@ class GenVendor {
 			let methods: SignatureGen[] = []
 			let constructors: ConstructorGen[] = []
 			let foundConstructors = 0
+
+			// Get superclass
+			// Neither "heritageClauses" nor "types" are exposed. CHEAT: 
+			let heritageClauses = (<any>sym.declarations[0]).heritageClauses
+			let inherit:ClassGen = null
+
+			if (heritageClauses) {
+				let inheritSymbol = typeChecker.getSymbolAtLocation(heritageClauses[0].types[0].expression)
+
+				let inheritName = inheritSymbol.name
+
+				inherit = vendor.classGen(inheritSymbol) as ClassGen // FIXME: NO NO NO NO NO USING "AS" IS NOT OK HERE NO
+
+				if (!inherit.inited) // FIXME: THIS WILL SOMETIMES OCCUR IN LEGITIMATE CIRCUMSTANCES. FIX WHEN MUTUAL RECURSION BECOMES ALLOWED
+					throw new GenConstructFail(`${name} is mutually recursive with its ancestor ${inheritName} in a confusing way`)
+			}
 
 			// Iterate over class members
 			// Public interface for SymbolTable lets you look up keys but not iterate them. CHEAT:
@@ -392,7 +432,10 @@ class GenVendor {
 				// Member is a field
 				} else if (hasBit(member.flags, ts.SymbolFlags.Property)) {
 					try {
-						fields.push(new FieldGen(member.name, this.typeGen(memberType)))
+						if (blacklisted("field", name + "." + member.name))
+							warn(`Refusing to translate blacklisted field ${member.name} of class ${name}`)
+						else if (!chainHasField(inherit, member.name))
+							fields.push(new FieldGen(member.name, this.typeGen(memberType)))
 					} catch (_e) {
 						let e:{} = _e
 						if (e instanceof UnusableType)
@@ -405,21 +448,25 @@ class GenVendor {
 
 				// Member is a method
 				} else if (hasBit(member.flags, ts.SymbolFlags.Method)) {
-					let counter = 0
-					for (let callSignature of memberType.getCallSignatures()) {
-						try {
-							counter++
-							methods.push( this.signatureGen(member, callSignature) )
-						} catch (_e) {
-							let e:{} = _e
-							if (e instanceof UnusableType)
-								warn(`Could not translate method ${sym.name} on class $name}`
-									+ (counter > 0 ? `, call signature #${counter}` : "")
-									+ ` because tried to translate ${typeChecker.typeToString(memberType)}`
-									+ ` but couldn't translate type ${typeChecker.typeToString(e.type)}`
-									)
-							else
-								throw _e
+					if (blacklisted("field", name + "." + member.name)) {
+						warn(`Refusing to translate blacklisted method ${member.name} of class ${name}`)
+					} else {
+						let counter = 0
+						for (let callSignature of memberType.getCallSignatures()) {
+							try {
+								counter++
+								methods.push( this.signatureGen(member, callSignature) )
+							} catch (_e) {
+								let e:{} = _e
+								if (e instanceof UnusableType)
+									warn(`Could not translate method ${sym.name} on class $name}`
+										+ (counter > 0 ? `, call signature #${counter}` : "")
+										+ ` because tried to translate ${typeChecker.typeToString(memberType)}`
+										+ ` but couldn't translate type ${typeChecker.typeToString(e.type)}`
+										)
+								else
+									throw _e
+							}
 						}
 					}
 
@@ -427,24 +474,6 @@ class GenVendor {
 				} else {
 					warn(`Could not figure out how to translate member ${member.name} of class ${sym.name}`)
 				}
-			}
-
-			// Get superclass
-			// Neither "heritageClauses" nor "types" are exposed. CHEAT: 
-			let heritageClauses = (<any>sym.declarations[0]).heritageClauses
-			let inherit:ClassGen = null
-
-			if (heritageClauses) {
-				let inheritSymbol = typeChecker.getSymbolAtLocation(heritageClauses[0].types[0].expression)
-
-				let inheritName = inheritSymbol.name
-				if (blacklist[inheritName]) // FIXME: Is this necessary?
-					throw new GenConstructFail("Refusing to translate child of blacklisted class " + inheritName)
-
-				inherit = vendor.classGen(inheritSymbol) as ClassGen // FIXME: NO NO NO NO NO USING "AS" IS NOT OK HERE NO
-
-				if (!inherit.inited) // FIXME: THIS WILL SOMETIMES OCCUR IN LEGITIMATE CIRCUMSTANCES. FIX WHEN MUTUAL RECURSION BECOMES ALLOWED
-					throw new GenConstructFail(`${name} is mutually recursive with its ancestor ${inheritName} in a confusing way`)
 			}
 
 			// Get constructor
