@@ -478,8 +478,15 @@ class GenVendor {
 
 			// Get constructor
 			// FIXME: Produces garbage on inherited constructors
-			if (!foundConstructors)
-				constructors.push(new ConstructorGen([]))
+			if (!foundConstructors) {
+				if (inherit && inherit.constructors) {
+					for (let constructor of inherit.constructors) {
+						constructors.push(new ConstructorGen( constructor.params ))
+					}
+				} else {
+					constructors.push(new ConstructorGen([]))
+				}
+			}
 
 			result.init(inherit, fields, constructors, methods)
 			return result

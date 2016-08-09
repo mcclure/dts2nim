@@ -1,52 +1,66 @@
+function testAssert(condition: boolean, message:string) {
+	if (!condition)
+		throw new Error("Test failed: " + message)
+}
 
-let QTALKTOME = 2
-let QTALKTOME2 = "OK"
+let QBnumber = 2
+let QBstring = "OK"
 
-function QADDONE(x:number) {
+function QFaddone(x:number) {
 	return x + 1
 }
 
-class QDEK1 {
-	ONE:number
-	TWO:string
-
-	FUNC(x:number) { return x + 2 }
+class QCorder {
+	grand: QCgrand
+	constructor() {
+		this.grand = new QCgrand("silver")
+	}
 }
 
-class QDEK2 extends QDEK1 {
-	THREE:number
-	FOUR:string
+class QCbase {
+	num1:number
+	str2:string
+
+	add2(x:number) { return x + 2 }
+}
+
+class QCchild extends QCbase {
+	num3:number
+	str4:string
 	constructor(ok:string) {
 		super()
-		this.THREE = 3
-		this.FOUR = ok
+		this.num3 = 3
+		this.str4 = ok
 	}
-	FUNC2(y:string) { return this.FOUR + y }
+	addNum(y:number) { this.num3 += y }
 }
 
-let QDEKZ = new QDEK2("3")
-
-function QCONSOLELOG(s:string) {
-	console.log(s)
+class QCgrand extends QCchild {
+	addStr(y:string) { return this.str4 + y }
 }
 
-let XGY : QDEK1[]
+let QIchild = new QCchild("3")
 
-class XQ1<T> {
+let QAarray : QCbase[]
+
+class QCgeneric<T> {
 	x: T
 }
 
-let XQ2 : XQ1<number>
+let QIgeneric : QCgeneric<number>
 
-class XREC1 {
-	a1: XREC2
+class QCrecursive1 {
+	a1: QCrecursive2
 }
 
-class XREC2 {
-	constructor(public a2 : XREC1) {
+class QCrecursive2 {
+	constructor(public a2 : QCrecursive1) {
 		a2.a1 = this
 	}
 }
 
 // TODO: Right now we erase mutually exclusive types, but pass through variables typed as one of the erased types 
 // let XR = new XREC2(new XREC1())
+
+// Ugly way to access global variable
+let QFbackflow = () : number => (<any>this).QBbackflow

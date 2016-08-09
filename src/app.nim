@@ -1,18 +1,40 @@
 import tsGlue
 
-let two* {.exportc.} = QTALKTOME
-let twoString* {.exportc.} = QTALKTOME2
+# POST
 
-let three* {.exportc.} = QADDONE(QTALKTOME)
+var failed = false
+try:
+  testAssert(false, "Expecting to fail")
+except:
+  failed = true
+testAssert(failed, "Self-test of test script")
 
-QCONSOLELOG("two plus one is " & $three)
+# Actual tests
 
-QDEKZ.ONE = 3
-QCONSOLELOG("three plus two is " & $QDEKZ.FUNC(QDEKZ.ONE))
+let QBbackflow* {.exportc.} = 543
 
-let four : QDEK1 = newQDEK1()
-let five : QDEK2 = newQDEK2("Concat ")
+testAssert(QBnumber == 2,    "Number variable")
+testAssert(QBstring == "OK", "String variable")
 
-QCONSOLELOG("two plus three is " & $four.FUNC(3))
+testAssert(QFaddone(5) == 6, "Call function")
 
-QCONSOLELOG(five.FUNC2("working"))
+testAssert(QIchild.num3 == 3, "Check instance")
+
+QIchild.num3 = 11
+testAssert(QIchild.num3 == 11, "Write instance")
+
+QIChild.addNum(5)
+testAssert(QIchild.num3 == 16, "Read instance 2")
+
+let inst1 : QCbase  = newQCbase()
+let inst2 : QCbase  = newQCchild("glow")
+let inst3 : QCgrand = newQCgrand("black")
+let inst4 = newQCorder()
+
+testAssert(inst1.add2(17) == 19, "Call method")
+testAssert(inst2.add2(19) == 21, "Call method 2")
+testAssert(inst3.addStr("light") == "blacklight", "Inherit constructor")
+testAssert(inst4.grand.addStr("fish") == "silverfish", "Inherit constructor 2")
+
+# TODO: Needs function-typed variables
+# testAssert(QFbackflow() == 543, "Exportc")
