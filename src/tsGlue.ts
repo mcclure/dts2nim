@@ -64,3 +64,21 @@ class QCrecursive2 {
 
 // Ugly way to access global variable
 let QFbackflow = () : number => (<any>this).QBbackflow
+
+// A pattern lib.d.ts frequently follows.
+interface QCproto {
+	num5: number
+	func6(v: number) : number
+}
+
+interface QCprototheconstructor {
+	new (value: number): QCproto
+	prototype: QCproto
+}
+
+class QCimplforproto implements QCproto {
+	constructor(public num5: number) {}
+	func6(v:number) { return this.num5 + v }
+}
+
+var QCproto: QCprototheconstructor = QCimplforproto
