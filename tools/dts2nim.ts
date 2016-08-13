@@ -50,8 +50,15 @@ console.log()
 
 let blacklist : {[key:string] : boolean} = {} // TODO: Could I just use Set()?
 for (let key of ["class:NodeList", "class:Array", "class:ArrayConstructor",
-	"field:Element.webkitRequestFullScreen", "field:HTMLVideoElement.webkitEnterFullscreen",
-	"field:HTMLVideoElement.webkitExitFullscreen"])
+	"Element.webkitRequestFullScreen",
+	"HTMLVideoElement.webkitEnterFullscreen", "HTMLVideoElement.webkitExitFullscreen",
+	"class:PerformanceMark", "class:PerformanceMeasure",
+	"WebGLRenderingContext.activeTexture", "WebGLRenderingContext.blendColor",
+	"WebGLRenderingContext.blendEquation", "WebGLRenderingContext.cullFace",
+	"WebGLRenderingContext.depthFunc", "WebGLRenderingContext.depthRange",
+	"WebGLRenderingContext.frontFace", "WebGLRenderingContext.lineWidth",
+	"WebGLRenderingContext.sampleCoverage", "WebGLRenderingContext.stencilFunc",
+	"WebGLRenderingContext.viewport", "WebGLRenderingContext.stencilFunc"])
 	blacklist[key] = true
 function blacklisted(nspace:string, name:string) : boolean {
 	return blacklist[name] || blacklist[nspace + ":" + name]
@@ -444,7 +451,7 @@ class GenVendor {
 		let fields : IdentifierGen[] = []
 		let staticTag = isStatic ? "static " : ""
 		try {
-			if (blacklisted("field", ownerName + "." + member.name))
+			if (blacklisted(isStatic ? "static" : "field", ownerName + "." + member.name))
 				warn(`Refusing to translate blacklisted ${staticTag}field ${member.name} of class ${ownerName}`)
 			else if (!(inherit && chainHasField(inherit, member.name)))
 				fields.push(new (isStatic ? VariableGen : FieldGen)(member.name, this.typeGen(memberType)))
@@ -463,7 +470,7 @@ class GenVendor {
 	methods(member: ts.Symbol, memberType: ts.Type, ownerName: string, isStatic = false) : SignatureGen[] {
 		let methods : SignatureGen[] = []
 		let staticTag = isStatic ? "static " : ""
-		if (blacklisted("field", ownerName + "." + member.name)) {
+		if (blacklisted(isStatic ? "static" : "field", ownerName + "." + member.name)) {
 			warn(`Refusing to translate blacklisted ${staticTag}method ${member.name} of class ${ownerName}`)
 		} else {
 			let counter = 0
@@ -596,14 +603,38 @@ class GenVendor {
 	// this instead of just declaring a class in order to get slightly different scope rules.
 	// This script does not care about scope rules and can safely just collapse into a class.
 	pseudoClassGen(sym: ts.Symbol, tsType: ts.Type) {
-		let constructor = tsType.symbol.members['__new']
+		let typeMembers = tsType.symbol.members
+		let constructor = typeMembers['__new']
 		if (constructor) {
+			let name = sym.name
 			let constructorClass = this.classGen(tsType.symbol, true)
 			constructorClass.suppress = true
 
-			let constructorSpec = this.constructorSpec(constructor.declarations, sym.name)
+			let constructorSpec = this.constructorSpec(constructor.declarations, name)
 
-			let resultClass = this.classGen(sym, false, constructorSpec)
+			let fields: IdentifierGen[] = []
+			let methods: SignatureGen[] = []
+
+			// CHEAT: The members cheat again, see classGen
+			for (let key in typeMembers as any) {
+				let member = typeMembers[key]
+				let memberType = typeChecker.getTypeOfSymbolAtLocation(member, sourceFile.endOfFileToken)
+				
+				// Member is a field
+				if (hasBit(member.flags, ts.SymbolFlags.Property)) {
+					fields = fields.concat( this.field(member, memberType, name, null, true) ) // True because these are statics
+
+				// Member is a method
+				} else if (hasBit(member.flags, ts.SymbolFlags.Method)) {
+					methods = methods.concat( this.methods(member, memberType, name, true) )
+
+				// Member is unsupported
+				} else {
+					warn(`Could not figure out how to translate member ${member.name} of class ${name}`)
+				}
+			}
+
+			let resultClass = this.classGen(sym, false, constructorSpec, new MemberSpec(fields, methods))
 			return resultClass
 		} else {
 			// Not sure what this is, fall back on just treating it like an interface

@@ -90,7 +90,7 @@ interface QCprototheconstructor {
 	new (value: number): QCproto
 	prototype: QCproto
 	numStatic3: number
-	numStatic4(q: number)
+	numStatic4(q: number) : number
 }
 
 class QCimplforproto implements QCproto {
