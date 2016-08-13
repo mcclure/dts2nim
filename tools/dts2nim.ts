@@ -197,8 +197,10 @@ interface TypeGen extends Gen {
 	typeString() : string
 }
 
-class IdentifierGen {
+class IdentifierGen implements Gen {
 	constructor(public name:string, public type: TypeGen) {}
+
+	declString() : string { throw new Error("Tried to print declaration for abstract identifier base class") }
 
 	depends()   { return arrayFilter(this.type.dependKey()) }
 	dependKey() { return this.name } // FIXME: Could variables live without these?
@@ -218,11 +220,9 @@ class ParameterGen extends IdentifierGen implements Gen {
 }
 
 class FieldGen extends IdentifierGen implements Gen {
-	declString(nameSpace: string = null) : string {
-		return `${identifierScrub(this.name, nameSpace)}*`
-		     + (nameSpace || needIdentifierScrub(this.name) ?
-		     	` {.importc:"${importIdentifier(this.name, nameSpace)}".}` : 
-		     	"")
+	declString() : string {
+		return `${identifierScrub(this.name)}*`
+		     + (needIdentifierScrub(this.name) ? ` {.importc:"${importIdentifier(this.name)}".}` : "")
 		     + `: ${this.type.typeString()}`
 	}	
 }
@@ -242,12 +242,12 @@ class SignatureGen extends SignatureBase implements Gen { // Function signature
 		super(params, returnType)
 	}
 
-	declString() : string {
+	declString(nameSpace: string = null) : string {
 		let fullParams = (this.owner ? [new ParameterGen("self", this.owner)] : []) 
 		               .concat( this.params )
-		return `proc ${identifierScrub(this.name)}*(${params(fullParams)}) : `
+		return `proc ${identifierScrub(this.name, nameSpace)}*(${params(fullParams)}) : `
 		     + this.returnType.typeString()
-			 + ` {.${importDirective(this.name, !!this.owner)}.}`
+			 + ` {.${importDirective(this.name, !!this.owner, nameSpace)}.}`
 	}
 	dependKey() { return this.name }
 }
@@ -298,7 +298,7 @@ class LiteralTypeGen implements TypeGen {
 }
 
 class MemberSpec {
-	constructor(public fields: FieldGen[], public methods: SignatureGen[]) {}
+	constructor(public fields: IdentifierGen[], public methods: SignatureGen[]) {}
 }
 
 class ClassGen implements TypeGen { // TODO: Make name optional?
@@ -311,7 +311,7 @@ class ClassGen implements TypeGen { // TODO: Make name optional?
 	invalid: boolean   // Cannot be instantiated; do not store anywhere except the cache
 	suppress: boolean  // Can and maybe has been instantiated, but shouldn't be output to file
 	constructor(public name: string, public abstract: boolean) {}
-	init(inherit:ClassGen, constructors: ConstructorGen[], fields: FieldGen[], methods: SignatureGen[], staticFields: FieldGen[], staticMethods: SignatureGen[]) {
+	init(inherit:ClassGen, constructors: ConstructorGen[], fields: IdentifierGen[], methods: SignatureGen[], staticFields: IdentifierGen[], staticMethods: SignatureGen[]) {
 		this.inherit = inherit
 		this.constructors = constructors
 		this.members = new MemberSpec(fields, methods)
@@ -332,7 +332,7 @@ class ClassGen implements TypeGen { // TODO: Make name optional?
 		     + (this.inherit ? identifierScrub(this.inherit.name) : "RootObj")
 			 + genJoinPrefixed(this.members.fields, "\n    ")
 		     + genJoinPrefixed(fullMethods, "\n")
-			 + genJoinPrefixed(this.statics.fields, "\n    ", this.name)
+			 + genJoinPrefixed(this.statics.fields, "\n", this.name)
 		     + genJoinPrefixed(this.statics.methods, "\n", this.name)
 	}
 	typeString() {
@@ -440,14 +440,14 @@ class GenVendor {
 		return spec
 	}
 
-	field(member: ts.Symbol, memberType: ts.Type, ownerName: string, inherit: ClassGen, isStatic = false) : FieldGen[] {
-		let fields : FieldGen[] = []
+	field(member: ts.Symbol, memberType: ts.Type, ownerName: string, inherit: ClassGen, isStatic = false) : IdentifierGen[] {
+		let fields : IdentifierGen[] = []
 		let staticTag = isStatic ? "static " : ""
 		try {
 			if (blacklisted("field", ownerName + "." + member.name))
 				warn(`Refusing to translate blacklisted ${staticTag}field ${member.name} of class ${ownerName}`)
 			else if (!(inherit && chainHasField(inherit, member.name)))
-				fields.push(new FieldGen(member.name, this.typeGen(memberType)))
+				fields.push(new (isStatic ? VariableGen : FieldGen)(member.name, this.typeGen(memberType)))
 		} catch (_e) {
 			let e:{} = _e
 			if (e instanceof UnusableType)
@@ -504,9 +504,9 @@ class GenVendor {
 		this.classes[name] = result
 
 		try {
-			let fields : FieldGen[] = []
+			let fields : IdentifierGen[] = []
 			let methods: SignatureGen[] = []
-			let staticFields : FieldGen [] = withStatics ? withStatics.fields.slice() : []
+			let staticFields : IdentifierGen [] = withStatics ? withStatics.fields.slice() : []
 			let staticMethods : SignatureGen [] = withStatics ? withStatics.methods.slice() : []
 			let constructors: ConstructorGen[] = withConstructors ? withConstructors.constructors.slice() : []
 			let foundConstructors = withConstructors ? withConstructors.foundConstructors : 0
