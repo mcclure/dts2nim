@@ -44,5 +44,4 @@ let outer = QFvarcallback(20, cb)
 testAssert(inner == 22, "Callback")
 testAssert(outer == 24, "Callback 2")
 
-# TODO: Needs function-typed variables
-# testAssert(QFbackflow() == 543, "Exportc")
+testAssert(QFbackflow() == 543, "Exportc")
