@@ -92,7 +92,9 @@ for (let name of ["addr", "and", "as", "asm", "atomic", "bind", "block", "break"
 
 // Convert TypeScript identifier to legal Nim identifier
 // FIXME: Leaves open possibility of collisions
-function identifierScrub(id:string) : string {
+function identifierScrub(id:string, nameSpace:string = null) : string {
+	if (nameSpace)
+		id = nameSpace + capitalizeFirstLetter(id)
 	id = id
 		.replace(/_{2,}/, "_")
 		.replace(/\$/, "zz")
@@ -103,19 +105,22 @@ function identifierScrub(id:string) : string {
 	return id
 }
 
-function needIdentifierScrub(id:string) : boolean {
+function needIdentifierScrub(id:string, nameSpace:string = null) : boolean {
 	return id != identifierScrub(id)
 }
 
 // Print the symbol that goes inside the quotes for an importc or importcpp
-function importIdentifier(id:string) : string {
+function importIdentifier(id:string, nameSpace:string = null) : string {
+	if (nameSpace)
+		id = nameSpace + "." + id
 	return id
 		.replace(/\$/, "$$$$")
 }
 
 // Print {.importc.} with possible symbol correction
-function importDirective(id:string, cpp:boolean = false) : string {
-	return "importc" + (cpp?"pp":"") + (id != identifierScrub(id) ? ":\"" + importIdentifier(id) + "\"" : "")
+function importDirective(id:string, cpp:boolean = false, nameSpace:string = null) : string {
+	return "importc" + (cpp?"pp":"") +
+		(nameSpace || id != identifierScrub(id) ? ":\"" + importIdentifier(id, nameSpace) + "\"" : "")
 }
 
 function arrayFilter<T>(x: T) : T[] {
@@ -124,6 +129,10 @@ function arrayFilter<T>(x: T) : T[] {
 
 function concatAll<T>(x:T[][]) : T[] {
 	return [].concat.apply([], x)
+}
+
+function joinPrefix(a: string[], prefix: string) {
+	return a.map(g => prefix + g).join("")
 }
 
 // Exceptions
@@ -162,7 +171,7 @@ interface GenVendor {
 interface Gen {
 	suppress?: boolean  // Can and maybe has been instantiated, but shouldn't be output to file
 
-	declString() : string
+	declString(nameSpace?:string) : string
 
 	depends() : string[] // TODO: Return a Gen[]
 	dependKey(): string  // Return the key you are described by in a dependency graph, or null
@@ -179,8 +188,9 @@ function genJoin(a:Gen[], joiner:string) {
 function decls(a: Gen[])  { return genJoin(a, "\n\n") }
 function params(a: Gen[]) { return genJoin(a, ", ") }
 
-function genJoinPrefixed(a:Gen[], prefix:string) {
-	return a.map(g => prefix + g.declString()).join("")
+// KLUDGE: genJoinPrefixed gets a nameSpace form and genJoin doesn't
+function genJoinPrefixed(a:Gen[], prefix:string, nameSpace: string = null) {
+	return a.map(g => prefix + g.declString(nameSpace)).join("")
 }
 
 interface TypeGen extends Gen {
@@ -195,8 +205,8 @@ class IdentifierGen {
 }
 
 class VariableGen extends IdentifierGen implements Gen {
-	declString() : string {
-		return `var ${identifierScrub(this.name)}* {.${importDirective(this.name)}, nodecl.}: `
+	declString(nameSpace: string = null) : string {
+		return `var ${identifierScrub(this.name, nameSpace)}* {.${importDirective(this.name, false, nameSpace)}, nodecl.}: `
 		     + this.type.typeString()
 	}
 }
@@ -208,9 +218,11 @@ class ParameterGen extends IdentifierGen implements Gen {
 }
 
 class FieldGen extends IdentifierGen implements Gen {
-	declString() : string {
-		return `${identifierScrub(this.name)}*`
-		     + (needIdentifierScrub(this.name) ? ` {.importc:"${importIdentifier(this.name)}".}` : "")
+	declString(nameSpace: string = null) : string {
+		return `${identifierScrub(this.name, nameSpace)}*`
+		     + (nameSpace || needIdentifierScrub(this.name) ?
+		     	` {.importc:"${importIdentifier(this.name, nameSpace)}".}` : 
+		     	"")
 		     + `: ${this.type.typeString()}`
 	}	
 }
@@ -320,6 +332,8 @@ class ClassGen implements TypeGen { // TODO: Make name optional?
 		     + (this.inherit ? identifierScrub(this.inherit.name) : "RootObj")
 			 + genJoinPrefixed(this.members.fields, "\n    ")
 		     + genJoinPrefixed(fullMethods, "\n")
+			 + genJoinPrefixed(this.statics.fields, "\n    ", this.name)
+		     + genJoinPrefixed(this.statics.methods, "\n", this.name)
 	}
 	typeString() {
 		return this.name
@@ -426,6 +440,54 @@ class GenVendor {
 		return spec
 	}
 
+	field(member: ts.Symbol, memberType: ts.Type, ownerName: string, inherit: ClassGen, isStatic = false) : FieldGen[] {
+		let fields : FieldGen[] = []
+		let staticTag = isStatic ? "static " : ""
+		try {
+			if (blacklisted("field", ownerName + "." + member.name))
+				warn(`Refusing to translate blacklisted ${staticTag}field ${member.name} of class ${ownerName}`)
+			else if (!(inherit && chainHasField(inherit, member.name)))
+				fields.push(new FieldGen(member.name, this.typeGen(memberType)))
+		} catch (_e) {
+			let e:{} = _e
+			if (e instanceof UnusableType)
+				warn(`Could not translate ${staticTag}field ${member.name} on class ${ownerName}`
+				  +  `because couldn't translate type ${typeChecker.typeToString(e.type)}`
+				)
+			else
+				throw _e
+		}
+		return fields
+	}
+
+	methods(member: ts.Symbol, memberType: ts.Type, ownerName: string, isStatic = false) : SignatureGen[] {
+		let methods : SignatureGen[] = []
+		let staticTag = isStatic ? "static " : ""
+		if (blacklisted("field", ownerName + "." + member.name)) {
+			warn(`Refusing to translate blacklisted ${staticTag}method ${member.name} of class ${ownerName}`)
+		} else {
+			let counter = 0
+			for (let callSignature of memberType.getCallSignatures()) {
+				try {
+					counter++
+					methods.push( this.signatureGen(member, callSignature) )
+				} catch (_e) {
+					let e:{} = _e
+					if (e instanceof UnusableType)
+						warn(`Could not translate ${staticTag}method ${member.name} on class ${ownerName}`
+							+ (counter > 0 ? `, call signature #${counter}` : "")
+							+ ` because tried to translate ${typeChecker.typeToString(memberType)}`
+							+ ` but couldn't translate type ${typeChecker.typeToString(e.type)}`
+							)
+					else
+						throw _e
+				}
+			}
+		}
+
+		return methods
+	}
+
 	classGen(sym: ts.Symbol, abstract = false, withConstructors: ConstructorSpec = null, withStatics: MemberSpec = null) : ClassGen {
 		let name = sym.name
 		let already = this.classes[name]
@@ -479,48 +541,34 @@ class GenVendor {
 
 				// Member is a field
 				} else if (hasBit(member.flags, ts.SymbolFlags.Property)) {
-					try {
-						if (blacklisted("field", name + "." + member.name))
-							warn(`Refusing to translate blacklisted field ${member.name} of class ${name}`)
-						else if (!chainHasField(inherit, member.name))
-							fields.push(new FieldGen(member.name, this.typeGen(memberType)))
-					} catch (_e) {
-						let e:{} = _e
-						if (e instanceof UnusableType)
-							warn(`Could not translate property ${member.name} on class ${name}`
-							  +  `because couldn't translate type ${typeChecker.typeToString(e.type)}`
-							)
-						else
-							throw _e
-					}
+					fields = fields.concat( this.field(member, memberType, name, inherit) )
 
 				// Member is a method
 				} else if (hasBit(member.flags, ts.SymbolFlags.Method)) {
-					if (blacklisted("field", name + "." + member.name)) {
-						warn(`Refusing to translate blacklisted method ${member.name} of class ${name}`)
-					} else {
-						let counter = 0
-						for (let callSignature of memberType.getCallSignatures()) {
-							try {
-								counter++
-								methods.push( this.signatureGen(member, callSignature) )
-							} catch (_e) {
-								let e:{} = _e
-								if (e instanceof UnusableType)
-									warn(`Could not translate method ${sym.name} on class $name}`
-										+ (counter > 0 ? `, call signature #${counter}` : "")
-										+ ` because tried to translate ${typeChecker.typeToString(memberType)}`
-										+ ` but couldn't translate type ${typeChecker.typeToString(e.type)}`
-										)
-								else
-									throw _e
-							}
-						}
-					}
+					methods = methods.concat( this.methods(member, memberType, name) )
 
 				// Member is unsupported
 				} else {
-					warn(`Could not figure out how to translate member ${member.name} of class ${sym.name}`)
+					warn(`Could not figure out how to translate member ${member.name} of class ${name}`)
+				}
+			}
+
+			// CHEAT: Same cheat as members, see above
+			for (let key in sym.exports as any) {
+				let member = sym.exports[key]
+				let memberType = typeChecker.getTypeOfSymbolAtLocation(member, sourceFile.endOfFileToken)
+
+				// Static member is a field
+				if (hasBit(member.flags, ts.SymbolFlags.Property)) {
+					staticFields = staticFields.concat( this.field(member, memberType, name, inherit, true) )
+
+				// Static member is a method
+				} else if (hasBit(member.flags, ts.SymbolFlags.Method)) {
+					staticMethods = staticMethods.concat( this.methods(member, memberType, name, true) )
+
+				// Static member is unsupported
+				} else {
+					warn(`Could not figure out how to translate static member ${member.name} of class ${name}`)
 				}
 			}
 
