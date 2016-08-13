@@ -36,5 +36,13 @@ testAssert(inst2.add2(19) == 21, "Call method 2")
 testAssert(inst3.addStr("light") == "blacklight", "Inherit constructor")
 testAssert(inst4.grand.addStr("fish") == "silverfish", "Inherit constructor 2")
 
+var inner : float = 0
+proc cb(x: float) : float =
+  inner = x + 1
+  return inner + 1
+let outer = QFvarcallback(20, cb)
+testAssert(inner == 22, "Callback")
+testAssert(outer == 24, "Callback 2")
+
 # TODO: Needs function-typed variables
 # testAssert(QFbackflow() == 543, "Exportc")

@@ -251,10 +251,26 @@ class ConstructorGen implements Gen {
 class LiteralTypeGen implements TypeGen {
 	constructor(public literal: string) {}
 
-	declString() : string { throw new Error("Tried to emit a declaration for a a core type") }
+	declString() : string { throw new Error("Tried to emit a declaration for a core type") }
 	typeString() { return this.literal }
 
 	depends() { return [] }
+	dependKey() { return null }
+}
+
+// TODO: Merge partially or completely with SignatureGen?
+class SignatureTypeGen implements Gen {
+	constructor(public params:ParameterGen[], public returnType: TypeGen) {}
+
+	declString() : string { throw new Error("Tried to emit a declaration for procedure type") }
+	typeString() : string {
+		return `proc (${params(this.params)}) : ${this.returnType.typeString()}`
+	}
+
+	depends() {
+		return allDepends( this.params )
+			   .concat( arrayFilter(this.returnType.dependKey()) )
+	}
 	dependKey() { return null }
 }
 
@@ -366,6 +382,10 @@ class GenVendor {
 		return result
 	}
 
+	signatureTypeGen(callSignature: ts.Signature) : SignatureTypeGen {
+		return new SignatureTypeGen(this.paramsGen(callSignature.getParameters()), this.typeGen(callSignature.getReturnType()))
+	}
+
 	classGen(sym: ts.Symbol, abstract = false) : TypeGen {
 		let name = sym.name
 		let already = this.classes[name]
@@ -415,7 +435,7 @@ class GenVendor {
 						foundConstructors++
 						try {
 							constructors.push( new ConstructorGen( 
-								// Parameters exist on Delcaration but are not publicly exposed. CHEAT:
+								// Parameters exist on Declaration but are not publicly exposed. CHEAT:
 								this.paramsGen( (declaration as any).parameters.map(node => node.symbol) )
 							) )
 						} catch (_e) {
@@ -507,6 +527,13 @@ class GenVendor {
 			return new LiteralTypeGen("bool")
 		if ((tsType.flags & ts.TypeFlags.Class) && tsType.symbol)
 			return this.classGen(tsType.symbol)
+
+		if (tsType.flags & ts.TypeFlags.Anonymous) {
+			let callSignatures = tsType.getCallSignatures()
+			if (callSignatures.length == 1)
+				return this.signatureTypeGen(callSignatures[0])
+		}
+		
 		throw new UnusableType(tsType)
 	}
 }

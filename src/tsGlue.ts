@@ -59,6 +59,12 @@ class QCrecursive2 {
 	}
 }
 
+let QFvaraddten = (x:number) => x + 10
+
+let QFvarcallback : (x: number, y: (z: number) => number) => number
+
+QFvarcallback = (x, y) => y(x + 1) + 1
+
 // TODO: Right now we erase mutually exclusive types, but pass through variables typed as one of the erased types 
 // let XR = new XREC2(new XREC1())
 
