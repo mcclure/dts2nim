@@ -3,6 +3,10 @@ function testAssert(condition: boolean, message:string) {
 		throw new Error("Test failed: " + message)
 }
 
+function consoleLog(message: string) {
+	console.log(message)
+}
+
 let QBnumber = 2
 let QBstring = "OK"
 

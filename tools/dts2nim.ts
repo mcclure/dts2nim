@@ -160,6 +160,8 @@ interface GenVendor {
 }
 
 interface Gen {
+	suppress?: boolean  // Can and maybe has been instantiated, but shouldn't be output to file
+
 	declString() : string
 
 	depends() : string[] // TODO: Return a Gen[]
@@ -264,6 +266,15 @@ class ConstructorGen implements Gen {
 	dependKey() { return null } // Constructors dont stand alone
 }
 
+class ConstructorSpec {
+	constructors: ConstructorGen[]
+	foundConstructors: number // Includes constructors that could not be converted to gens
+	constructor() {
+		this.constructors = []
+		this.foundConstructors = 0
+	}
+}
+
 class LiteralTypeGen implements TypeGen {
 	constructor(public literal: string) {}
 
@@ -280,8 +291,9 @@ class ClassGen implements TypeGen { // TODO: Make name optional?
 	fields: FieldGen[]
 	constructors: ConstructorGen[]
 	methods: SignatureGen[]
-	inited: boolean
-	invalid: boolean
+	inited: boolean    // Has been fully instantiated
+	invalid: boolean   // Cannot be instantiated; do not store anywhere except the cache
+	suppress: boolean  // Can and maybe has been instantiated, but shouldn't be output to file
 	constructor(public name: string, public abstract: boolean) {}
 	init(inherit:ClassGen, fields: FieldGen[], constructors: ConstructorGen[], methods: SignatureGen[]) {
 		this.inherit = inherit
@@ -386,7 +398,30 @@ class GenVendor {
 		return new SignatureTypeGen(this.paramsGen(callSignature.getParameters()), this.typeGen(callSignature.getReturnType()))
 	}
 
-	classGen(sym: ts.Symbol, abstract = false) : TypeGen {
+	constructorSpec(declarations: ts.Declaration[], ownerName: string = "(unknown)") : ConstructorSpec {
+		let spec = new ConstructorSpec()
+		for (let declaration of declarations) {
+			spec.foundConstructors++
+			try {
+				spec.constructors.push( new ConstructorGen(
+					// Parameters exist on Declaration but are not publicly exposed. CHEAT:
+					this.paramsGen( (declaration as any).parameters.map(node => node.symbol) )
+				) )
+			} catch (_e) {
+				let e:{} = _e
+				if (e instanceof UnusableType)
+					warn(`Could not translate constructor #${spec.foundConstructors} on class ${ownerName}`
+					   + ` because couldn't translate type ${typeChecker.typeToString(e.type)}`
+					)
+				else
+					throw _e
+			}
+		}
+
+		return spec
+	}
+
+	classGen(sym: ts.Symbol, abstract = false, withConstructors: ConstructorSpec = null) : ClassGen {
 		let name = sym.name
 		let already = this.classes[name]
 		if (already) { // FIXME: will freak out on "prototype"
@@ -404,12 +439,12 @@ class GenVendor {
 		try {
 			let fields : FieldGen[] = []
 			let methods: SignatureGen[] = []
-			let constructors: ConstructorGen[] = []
-			let foundConstructors = 0
+			let constructors: ConstructorGen[] = withConstructors ? withConstructors.constructors.slice() : []
+			let foundConstructors = withConstructors ? withConstructors.foundConstructors : 0
 
 			// Get superclass
 			// Neither "heritageClauses" nor "types" are exposed. CHEAT: 
-			let heritageClauses = (<any>sym.declarations[0]).heritageClauses
+			let heritageClauses = (sym.declarations[0] as any).heritageClauses
 			let inherit:ClassGen = null
 
 			if (heritageClauses) {
@@ -417,7 +452,7 @@ class GenVendor {
 
 				let inheritName = inheritSymbol.name
 
-				inherit = vendor.classGen(inheritSymbol) as ClassGen // FIXME: NO NO NO NO NO USING "AS" IS NOT OK HERE NO
+				inherit = vendor.classGen(inheritSymbol)
 
 				if (!inherit.inited) // FIXME: THIS WILL SOMETIMES OCCUR IN LEGITIMATE CIRCUMSTANCES. FIX WHEN MUTUAL RECURSION BECOMES ALLOWED
 					throw new GenConstructFail(`${name} is mutually recursive with its ancestor ${inheritName} in a confusing way`)
@@ -425,29 +460,15 @@ class GenVendor {
 
 			// Iterate over class members
 			// Public interface for SymbolTable lets you look up keys but not iterate them. CHEAT:
-			for (let key in <any>sym.members) {
+			for (let key in sym.members as any) {
 				let member = sym.members[key]
 				let memberType = typeChecker.getTypeOfSymbolAtLocation(member, sourceFile.endOfFileToken)
 				
 				// Member is a constructor
 				if (hasBit(member.flags, ts.SymbolFlags.Constructor)) {
-					for (let declaration of member.declarations) {
-						foundConstructors++
-						try {
-							constructors.push( new ConstructorGen( 
-								// Parameters exist on Declaration but are not publicly exposed. CHEAT:
-								this.paramsGen( (declaration as any).parameters.map(node => node.symbol) )
-							) )
-						} catch (_e) {
-							let e:{} = _e
-							if (e instanceof UnusableType)
-								warn(`Could not translate constructor #${foundConstructors} on class ${name}`
-								   + ` because couldn't translate type ${typeChecker.typeToString(e.type)}`
-								)
-							else
-								throw _e
-						}
-					}
+					let spec = this.constructorSpec(member.declarations, name)
+					constructors = constructors.concat( spec.constructors )
+					foundConstructors += spec.foundConstructors
 
 				// Member is a field
 				} else if (hasBit(member.flags, ts.SymbolFlags.Property)) {
@@ -497,7 +518,6 @@ class GenVendor {
 			}
 
 			// Get constructor
-			// FIXME: Produces garbage on inherited constructors
 			if (!foundConstructors) {
 				if (inherit && inherit.constructors) {
 					for (let constructor of inherit.constructors) {
@@ -513,6 +533,26 @@ class GenVendor {
 		} catch (e) {
 			result.invalid = true
 			throw e
+		}
+	}
+
+	// A standard pattern in d.ts files is to mimic a class by means of a interface+variable combo
+	// paired with a separate interface describing the class's constructor. The d.ts authors do
+	// this instead of just declaring a class in order to get slightly different scope rules.
+	// This script does not care about scope rules and can safely just collapse into a class.
+	pseudoClassGen(sym: ts.Symbol, tsType: ts.Type) {
+		let constructor = tsType.symbol.members['__new']
+		if (constructor) {
+			let constructorClass = this.classGen(tsType.symbol, true)
+			constructorClass.suppress = true
+
+			let constructorSpec = this.constructorSpec(constructor.declarations, sym.name)
+
+			let resultClass = this.classGen(sym, false, constructorSpec)
+			return resultClass
+		} else {
+			// Not sure what this is, fall back on just treating it like an interface
+			return this.classGen(sym, true)
 		}
 	}
 
@@ -584,14 +624,17 @@ for (let sym of typeChecker.getSymbolsInScope(sourceFile.endOfFileToken, 0xFFFFF
 	try {
 		// Class
 		if (hasBit(sym.flags, ts.SymbolFlags.Class)) {
-			generators.push( vendor.classGen(type.symbol) )
+			generators.push( vendor.classGen(sym) )
+
+		} else if (hasBit(sym.flags, ts.SymbolFlags.BlockScopedVariable) || hasBit(sym.flags, ts.SymbolFlags.FunctionScopedVariable)) {
+			if (hasBit(sym.flags, ts.SymbolFlags.Interface))
+				generators.push( vendor.pseudoClassGen(sym, type) )
+			else
+				generators.push( vendor.variableGen(sym, type) )
 
 		// Interface
 		} else if (hasBit(sym.flags, ts.SymbolFlags.Interface)) {
 			generators.push( vendor.classGen(sym, true) )
-
-		} else if (hasBit(sym.flags, ts.SymbolFlags.BlockScopedVariable) || hasBit(sym.flags, ts.SymbolFlags.FunctionScopedVariable)) {
-			generators.push( vendor.variableGen(sym, type) )
 
 		// Function
 		} else if (hasBit(sym.flags, ts.SymbolFlags.Function)) {
@@ -632,11 +675,13 @@ let groupedGenerators : Gen[][] =
 
 let sortedGenerators : Gen[] = []
 for (let group of groupedGenerators) {
-	if (group.length > 1)
+	if (group.length > 1) {
 		warn("Can't translate mutually recursive types, so ignoring: "
 		   + (group.map(x => x.dependKey())).join(", ")) // This is a misuse of dependKey
-	else if (group[0]) // TODO: Delete nodes that depend on nonexistent things
+	} else if (group[0]) { // TODO: Delete nodes that depend on nonexistent things
+		if (!group[0].suppress)
 		sortedGenerators.push(group[0])
+	}
 }
 
 console.log( decls(sortedGenerators) )

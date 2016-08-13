@@ -45,3 +45,6 @@ testAssert(inner == 22, "Callback")
 testAssert(outer == 24, "Callback 2")
 
 testAssert(QFbackflow() == 543, "Exportc")
+
+let pseudo = newQCproto(6)
+testAssert(pseudo.func6(7) == 13, "Pseudoclass")
