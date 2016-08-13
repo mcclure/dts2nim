@@ -37,6 +37,11 @@ class QCchild extends QCbase {
 		this.str4 = ok
 	}
 	addNum(y:number) { this.num3 += y }
+
+	static numStatic1: number = 60
+	static numStatic2(q: number) {
+		return 70 + q
+	}
 }
 
 class QCgrand extends QCchild {
@@ -84,11 +89,17 @@ interface QCproto {
 interface QCprototheconstructor {
 	new (value: number): QCproto
 	prototype: QCproto
+	numStatic3: number
+	numStatic4(q: number)
 }
 
 class QCimplforproto implements QCproto {
 	constructor(public num5: number) {}
 	func6(v:number) { return this.num5 + v }
+	static numStatic3: number = 80
+	static numStatic4(q: number) {
+		return 90 + q
+	}
 }
 
 var QCproto: QCprototheconstructor = QCimplforproto

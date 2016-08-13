@@ -285,21 +285,25 @@ class LiteralTypeGen implements TypeGen {
 	dependKey() { return null }
 }
 
+class MemberSpec {
+	constructor(public fields: FieldGen[], public methods: SignatureGen[]) {}
+}
+
 class ClassGen implements TypeGen { // TODO: Make name optional?
 	// Inherit may be null. "abstract" refers to a class that can be inherited from but not instantiated.
 	inherit: ClassGen
-	fields: FieldGen[]
 	constructors: ConstructorGen[]
-	methods: SignatureGen[]
+	members: MemberSpec
+	statics: MemberSpec
 	inited: boolean    // Has been fully instantiated
 	invalid: boolean   // Cannot be instantiated; do not store anywhere except the cache
 	suppress: boolean  // Can and maybe has been instantiated, but shouldn't be output to file
 	constructor(public name: string, public abstract: boolean) {}
-	init(inherit:ClassGen, fields: FieldGen[], constructors: ConstructorGen[], methods: SignatureGen[]) {
+	init(inherit:ClassGen, constructors: ConstructorGen[], fields: FieldGen[], methods: SignatureGen[], staticFields: FieldGen[], staticMethods: SignatureGen[]) {
 		this.inherit = inherit
-		this.fields = fields
 		this.constructors = constructors
-		this.methods = methods
+		this.members = new MemberSpec(fields, methods)
+		this.statics = new MemberSpec(staticFields, staticMethods)
 		this.inited = true
 		for (let constructor of constructors)
 			constructor.owner = this
@@ -308,13 +312,13 @@ class ClassGen implements TypeGen { // TODO: Make name optional?
 	}
 
 	declString() : string {
-		let fullMethods: Gen[] = this.methods
+		let fullMethods: Gen[] = this.members.methods
 		if (!this.abstract)
 			fullMethods = (this.constructors as Gen[]).concat( fullMethods )
 
 		return `type ${identifierScrub(this.name)}* {.${importDirective(this.name)}.} = ref object of `
 		     + (this.inherit ? identifierScrub(this.inherit.name) : "RootObj")
-			 + genJoinPrefixed(this.fields, "\n    ")
+			 + genJoinPrefixed(this.members.fields, "\n    ")
 		     + genJoinPrefixed(fullMethods, "\n")
 	}
 	typeString() {
@@ -323,7 +327,8 @@ class ClassGen implements TypeGen { // TODO: Make name optional?
 
 	depends() {
 		return concatAll(
-			[this.fields, this.constructors, this.methods].map( x => allDepends(x) )
+			[this.members.fields, this.constructors, this.members.methods, this.statics.fields, this.statics.methods]
+				.map( x => allDepends(x) )
 		).concat( this.inherit ? [this.inherit.dependKey()] : [] )
 	}
 	dependKey() { return this.name }
@@ -332,7 +337,7 @@ class ClassGen implements TypeGen { // TODO: Make name optional?
 function chainHasField(gen:ClassGen, name:string) : boolean {
 	if (!gen)
 		return false
-	for(let field of gen.fields)
+	for(let field of gen.members.fields)
 		if (field.name == name)
 			return true
 	return chainHasField(gen.inherit, name)
@@ -421,7 +426,7 @@ class GenVendor {
 		return spec
 	}
 
-	classGen(sym: ts.Symbol, abstract = false, withConstructors: ConstructorSpec = null) : ClassGen {
+	classGen(sym: ts.Symbol, abstract = false, withConstructors: ConstructorSpec = null, withStatics: MemberSpec = null) : ClassGen {
 		let name = sym.name
 		let already = this.classes[name]
 		if (already) { // FIXME: will freak out on "prototype"
@@ -439,6 +444,8 @@ class GenVendor {
 		try {
 			let fields : FieldGen[] = []
 			let methods: SignatureGen[] = []
+			let staticFields : FieldGen [] = withStatics ? withStatics.fields.slice() : []
+			let staticMethods : SignatureGen [] = withStatics ? withStatics.methods.slice() : []
 			let constructors: ConstructorGen[] = withConstructors ? withConstructors.constructors.slice() : []
 			let foundConstructors = withConstructors ? withConstructors.foundConstructors : 0
 
@@ -528,7 +535,7 @@ class GenVendor {
 				}
 			}
 
-			result.init(inherit, fields, constructors, methods)
+			result.init(inherit, constructors, fields, methods, staticFields, staticMethods)
 			return result
 		} catch (e) {
 			result.invalid = true
