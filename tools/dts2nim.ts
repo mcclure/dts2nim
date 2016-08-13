@@ -213,9 +213,21 @@ class FieldGen extends IdentifierGen implements Gen {
 	}	
 }
 
-class SignatureGen implements Gen {
+class SignatureBase {
+	constructor(public params:ParameterGen[], public returnType: TypeGen) {}
+
+	depends() {
+		return allDepends( this.params )
+			   .concat( arrayFilter(this.returnType.dependKey()) )
+	}
+}
+
+class SignatureGen extends SignatureBase implements Gen { // Function signature
 	owner: ClassGen
-	constructor(public name: string, public params:ParameterGen[], public returnType: TypeGen) {}
+	constructor(public name: string, params:ParameterGen[], returnType: TypeGen) {
+		super(params, returnType)
+	}
+
 	declString() : string {
 		let fullParams = (this.owner ? [new ParameterGen("self", this.owner)] : []) 
 		               .concat( this.params )
@@ -223,12 +235,16 @@ class SignatureGen implements Gen {
 		     + this.returnType.typeString()
 			 + ` {.${importDirective(this.name, !!this.owner)}.}`
 	}
-
-	depends() {
-		return allDepends( this.params )
-			   .concat( arrayFilter(this.returnType.dependKey()) )
-	}
 	dependKey() { return this.name }
+}
+
+class SignatureTypeGen extends SignatureBase implements TypeGen {
+	declString() : string { throw new Error("Tried to emit a declaration for a procedure type") }
+	typeString() : string {
+		return `proc (${params(this.params)}) : ${this.returnType.typeString()}`
+	}
+
+	dependKey() { return null }
 }
 
 class ConstructorGen implements Gen {
@@ -255,22 +271,6 @@ class LiteralTypeGen implements TypeGen {
 	typeString() { return this.literal }
 
 	depends() { return [] }
-	dependKey() { return null }
-}
-
-// TODO: Merge partially or completely with SignatureGen?
-class SignatureTypeGen implements Gen {
-	constructor(public params:ParameterGen[], public returnType: TypeGen) {}
-
-	declString() : string { throw new Error("Tried to emit a declaration for procedure type") }
-	typeString() : string {
-		return `proc (${params(this.params)}) : ${this.returnType.typeString()}`
-	}
-
-	depends() {
-		return allDepends( this.params )
-			   .concat( arrayFilter(this.returnType.dependKey()) )
-	}
 	dependKey() { return null }
 }
 
