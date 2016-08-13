@@ -99,7 +99,7 @@ function identifierScrub(id:string) : string {
 	if (id[0] == '_')
 		id = "z" + capitalizeFirstLetter(id.slice(1))
 	if (reserved[id])
-		id = "x" + capitalizeFirstLetter(id.slice(1))
+		id = "x" + capitalizeFirstLetter(id)
 	return id
 }
 
@@ -176,7 +176,7 @@ function genJoin(a:Gen[], joiner:string) {
 	return a.map(g => g.declString()).join(joiner)
 }
 
-function decls(a: Gen[])  { return genJoin(a, "\n") }
+function decls(a: Gen[])  { return genJoin(a, "\n\n") }
 function params(a: Gen[]) { return genJoin(a, ", ") }
 
 function genJoinPrefixed(a:Gen[], prefix:string) {
