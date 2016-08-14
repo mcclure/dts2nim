@@ -161,14 +161,14 @@ class CustomError extends Error {
 	}
 }
 
+class GenConstructFail extends CustomError {	
+}
+
 // Raised on Typescript type the converter script doesn't know how to convert
-class UnusableType extends CustomError {
+class UnusableType extends GenConstructFail {
 	constructor(public type: ts.Type) {
 		super("Cannot represent type: " + typeChecker.typeToString(type))
 	}
-}
-
-class GenConstructFail extends CustomError {	
 }
 
 // Generator classes
@@ -324,7 +324,7 @@ class ClassGen implements TypeGen { // TODO: Make name optional?
 	members: MemberSpec
 	statics: MemberSpec
 	inited: boolean    // Has been fully instantiated
-	invalid: boolean   // Cannot be instantiated; do not store anywhere except the cache
+	invalid: boolean       // If true, could be instantiated; do not store anywhere except the cache (stores exception)
 	suppress: boolean  // Can and maybe has been instantiated, but shouldn't be output to file
 	constructor(public name: string, public abstract: boolean) {}
 	init(inherit:ClassGen, constructors: ConstructorGen[], fields: IdentifierGen[], methods: SignatureGen[], staticFields: IdentifierGen[], staticMethods: SignatureGen[]) {
@@ -508,17 +508,27 @@ class GenVendor {
 		return methods
 	}
 
-	classGen(sym: ts.Symbol, abstract = false, classExtraSource: () => ClassExtraSpec = null) : ClassGen {
+	classGen(sym: ts.Symbol, tsType: ts.Type, abstract = false, classExtraSource: () => ClassExtraSpec = null) : ClassGen {
+		function classType() {
+			if (!tsType)
+				tsType = typeChecker.getTypeOfSymbolAtLocation(sym, sourceFile.endOfFileToken)
+			return tsType
+		}
+		function classUnusableType() { return new UnusableType(classType()) }
+		function classKind() { return abstract ? "interface" : "class" }
+
 		let name = sym.name
 		let already = this.classes[name]
 		if (already) {
 			if (already.invalid)
-				throw new GenConstructFail("Tried to reuse unbuildable type") // FIXME: Should be an UnusableType
+				throw classUnusableType()
 			return already
 		}
 
-		if (blacklisted("class", name))
-			throw new GenConstructFail("Refusing to translate blacklisted class " + name)
+		if (blacklisted("class", name)) {
+			warn("Refusing to translate blacklisted ${classKind()} " + name)
+			throw classUnusableType()
+		}
 
 		let result = new ClassGen(name, abstract)
 		this.classes[name] = result
@@ -543,10 +553,12 @@ class GenVendor {
 
 				let inheritName = inheritSymbol.name
 
-				inherit = vendor.classGen(inheritSymbol)
+				inherit = vendor.classGen(inheritSymbol, null)
 
-				if (!inherit.inited) // FIXME: THIS WILL SOMETIMES OCCUR IN LEGITIMATE CIRCUMSTANCES. FIX WHEN MUTUAL RECURSION BECOMES ALLOWED
-					throw new GenConstructFail(`${name} is mutually recursive with its ancestor ${inheritName} in a confusing way`)
+				if (!inherit.inited) { // FIXME: THIS WILL SOMETIMES OCCUR IN LEGITIMATE CIRCUMSTANCES. FIX WHEN MUTUAL RECURSION BECOMES ALLOWED
+					warn(`${classKind()} ${name} is mutually recursive with its ancestor ${inheritName} in a confusing way`)
+					throw classUnusableType()
+				}
 			}
 
 			// Iterate over class members
@@ -613,9 +625,15 @@ class GenVendor {
 
 			result.init(inherit, constructors, fields, methods, staticFields, staticMethods)
 			return result
-		} catch (e) {
+		} catch (_e) {
+			let e:{} = _e
 			result.invalid = true
-			throw e
+			if (e instanceof UnusableType && e.type !== classType()) { // TODO: This would be unnecessary with try-catches above.
+				warn(`Could not translate ${classKind()} ${name} because could not translate type `
+					+ typeChecker.typeToString(e.type))
+				throw classUnusableType()
+			}
+			throw(e)
 		}
 	}
 
@@ -632,7 +650,7 @@ class GenVendor {
 			let typeIsSelf = tsType.symbol === sym
 
 			if (!typeIsSelf) {
-				let constructorClass = this.classGen(tsType.symbol, true)
+				let constructorClass = this.classGen(tsType.symbol, null, false)
 				constructorClass.suppress = true
 			}
 
@@ -672,9 +690,7 @@ class GenVendor {
 		}
 
 		// Abstract if no constructor was found
-		try {
-		return this.classGen(sym, !constructor, classExtraSource)
-		} catch (e) { warn(`FAILING ON ${sym.name} WITH ${e}`); throw e }
+		return this.classGen(sym, tsType, !constructor, classExtraSource)
 	}
 
 	typeGen(tsType: ts.Type) : TypeGen {
@@ -690,7 +706,7 @@ class GenVendor {
 			if (tsType.symbol.flags & (ts.SymbolFlags.BlockScopedVariable | ts.SymbolFlags.FunctionScopedVariable))
 				return this.pseudoClassGen(tsType.symbol, tsType)
 
-			return this.classGen(tsType.symbol)
+			return this.classGen(tsType.symbol, tsType)
 		}
 
 		if (tsType.flags & ts.TypeFlags.Anonymous) {
@@ -734,41 +750,41 @@ let sourceFile = sourceFiles[sourceFiles.length-1]
 let generators : Gen[] = []
 
 for (let sym of typeChecker.getSymbolsInScope(sourceFile.endOfFileToken, 0xFFFFFFFF)) {
-	let type = typeChecker.getTypeOfSymbolAtLocation(sym, sourceFile.endOfFileToken)
+	let tsType = typeChecker.getTypeOfSymbolAtLocation(sym, sourceFile.endOfFileToken)
 	
 	// Handle --debugPrefix command
 	if (commander.debugPrefix && sym.name.substr(0, commander.debugPrefix.length) == commander.debugPrefix)
-		console.log("\n# " + sym.name + ": " + typeChecker.typeToString(type) +
+		console.log("\n# " + sym.name + ": " + typeChecker.typeToString(tsType) +
 			"\n#     Node:" + enumBitstring(ts.SymbolFlags, sym.flags, true) +
 			debugVerboseEpilogue(sym) +
-			"\n#     Type:" + enumBitstring(ts.TypeFlags, type.flags, true) +
-			debugVerboseEpilogue(type)
+			"\n#     Type:" + enumBitstring(ts.TypeFlags, tsType.flags, true) +
+			debugVerboseEpilogue(tsType)
 		)
 
 	// Variable
 	try {
 		// Class
 		if (hasBit(sym.flags, ts.SymbolFlags.Class)) {
-			generators.push( vendor.classGen(sym) )
+			generators.push( vendor.classGen(sym, tsType) )
 
 		} else if (sym.flags & (ts.SymbolFlags.BlockScopedVariable | ts.SymbolFlags.FunctionScopedVariable)) {
 			if (hasBit(sym.flags, ts.SymbolFlags.Interface))
-				generators.push( vendor.pseudoClassGen(sym, type) )
+				generators.push( vendor.pseudoClassGen(sym, tsType) )
 			else
-				generators.push( vendor.variableGen(sym, type) )
+				generators.push( vendor.variableGen(sym, tsType) )
 
 		// Interface
 		} else if (hasBit(sym.flags, ts.SymbolFlags.Interface)) {
-			generators.push( vendor.classGen(sym, true) )
+			generators.push( vendor.classGen(sym, tsType, true) )
 
 		// Function
 		} else if (hasBit(sym.flags, ts.SymbolFlags.Function)) {
-			generators = generators.concat( vendor.functionGen(sym, type) )
+			generators = generators.concat( vendor.functionGen(sym, tsType) )
 
 		// Unsupported
 		} else {
 			warn("Could not figure out how to translate symbol", sym.name, ":",
-					typeChecker.typeToString(type))
+					typeChecker.typeToString(tsType))
 		}
 	} catch (_e) {
 		let e:{} = _e
