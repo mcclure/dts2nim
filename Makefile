@@ -22,7 +22,7 @@ install/style.css: static/style.css
 	mkdir -p $(@D)
 	cp $< $@
 
-src/tsGlue.nim: src/tsGlue.ts tools/dts2nim.js
+src/tsGlue.nim: src/tsGlue.ts install/tsGlue.js tools/dts2nim.js
 	node tools/dts2nim.js -q $< > $@
 
 tools/dts2nim.js: tools/typings/index.d.ts tools/dts2nim.ts

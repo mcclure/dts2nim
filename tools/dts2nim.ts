@@ -240,8 +240,7 @@ class ParameterGen extends IdentifierGen implements Gen {
 
 class FieldGen extends IdentifierGen implements Gen {
 	declString() : string {
-		return `${identifierScrub(this.name)}*`
-		     + (needIdentifierScrub(this.name) ? ` {.importc:"${importIdentifier(this.name)}".}` : "")
+		return `${identifierScrub(this.name)}* {.${importDirective(this.name)}.}`
 		     + `: ${this.type.typeString()}`
 	}	
 }
