@@ -52,6 +52,12 @@ let QIchild = new QCchild("3")
 
 let QAarray : QCbase[]
 
+interface QCinterface {
+	str5: string
+}
+
+let QIinterface: QCinterface = {str5: "five"}
+
 class QCgeneric<T> {
 	x: T
 }
@@ -103,3 +109,5 @@ class QCimplforproto implements QCproto {
 }
 
 var QCproto: QCprototheconstructor = QCimplforproto
+
+var QIproto: QCproto = new QCproto(62)

@@ -59,7 +59,9 @@ for (let key of [
 	// Can't translate without namespace collision handling
 	"Element.webkitRequestFullScreen", "HTMLVideoElement.webkitEnterFullscreen", "HTMLVideoElement.webkitExitFullscreen",
 	// Can't translate without module support
-	"class:CollatorOptions", "class:CSSRule", "class:DateTimeFormatOptions", "class:NumberFormatOptions", "class:Plugin"
+	"class:CollatorOptions", "class:CSSRule", "class:DateTimeFormatOptions", "class:NumberFormatOptions", "class:Plugin",
+	// Can't translate without mutual recursion
+	"class:EventTarget", "class:Document", "class:Window", "class:SourceBuffer"
 	])
 	blacklist[key] = true
 

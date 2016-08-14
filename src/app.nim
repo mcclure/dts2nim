@@ -29,6 +29,8 @@ testAssert(QIchild.num3 == 16, "Read instance 2")
 testAssert(QCChild_numStatic1 == 60, "Read static instance")
 testAssert(QCChild_numStatic2(3) == 73, "Call static method")
 
+testAssert(QIinterface.str5 == "five", "Read interface instance")
+
 let inst1 : QCbase  = newQCbase()
 let inst2 : QCbase  = newQCchild("glow")
 let inst3 : QCgrand = newQCgrand("black")
@@ -52,5 +54,7 @@ testAssert(QFbackflow() == 543, "Exportc")
 let pseudo = newQCproto(6)
 testAssert(pseudo.func6(7) == 13, "Pseudoclass")
 
-testAssert(QCProto_numStatic3 == 80, "Pseudoclass, read static instance")
+testAssert(QCProto_numStatic3 == 80, "Pseudoclass, read static member")
 testAssert(QCProto_numStatic4(4) == 94, "Pseudoclass, call static method")
+
+testAssert(QIproto.num5 == 62, "Pseudoclass instance read")
