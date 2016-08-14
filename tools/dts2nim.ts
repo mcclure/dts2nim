@@ -53,9 +53,16 @@ function emptyMap() { return Object.create(null) }
 interface StringSet { [key:string] : boolean }
 
 let blacklist : StringSet = emptyMap()
-for (let key of ["static:prototype",
-	"Element.webkitRequestFullScreen", "HTMLVideoElement.webkitEnterFullscreen", "HTMLVideoElement.webkitExitFullscreen"])
+for (let key of [
+	// Does not make sense outside Javascript
+	"static:prototype",
+	// Can't translate without namespace collision handling
+	"Element.webkitRequestFullScreen", "HTMLVideoElement.webkitEnterFullscreen", "HTMLVideoElement.webkitExitFullscreen",
+	// Can't translate without module support
+	"class:CollatorOptions", "class:CSSRule", "class:DateTimeFormatOptions", "class:NumberFormatOptions", "class:Plugin"
+	])
 	blacklist[key] = true
+
 function blacklisted(nspace:string, name1:string, name2:string = null) : boolean {
 	if (name2) {
 		let combined = name1 + "." + name2
@@ -357,6 +364,10 @@ class ClassGen implements TypeGen { // TODO: Make name optional?
 	dependKey() { return this.name }
 }
 
+class ClassExtraSpec {
+	constructor(public constructors: ConstructorSpec, public statics: MemberSpec, public banFields: StringSet) {}
+}
+
 function chainHasField(gen:ClassGen, name:string) : boolean {
 	if (!gen)
 		return false
@@ -497,7 +508,7 @@ class GenVendor {
 		return methods
 	}
 
-	classGen(sym: ts.Symbol, abstract = false, withConstructors: ConstructorSpec = null, withStatics: MemberSpec = null, extraBanFields: StringSet = {}) : ClassGen {
+	classGen(sym: ts.Symbol, abstract = false, classExtraSource: () => ClassExtraSpec = null) : ClassGen {
 		let name = sym.name
 		let already = this.classes[name]
 		if (already) {
@@ -513,12 +524,14 @@ class GenVendor {
 		this.classes[name] = result
 
 		try {
+			let classExtra = classExtraSource ? classExtraSource() : null
 			let fields : IdentifierGen[] = []
 			let methods: SignatureGen[] = []
-			let staticFields : IdentifierGen [] = withStatics ? withStatics.fields.slice() : []
-			let staticMethods : SignatureGen [] = withStatics ? withStatics.methods.slice() : []
-			let constructors: ConstructorGen[] = withConstructors ? withConstructors.constructors.slice() : []
-			let foundConstructors = withConstructors ? withConstructors.foundConstructors : 0
+			let staticFields : IdentifierGen [] = classExtra ? classExtra.statics.fields.slice() : []
+			let staticMethods : SignatureGen [] = classExtra ? classExtra.statics.methods.slice() : []
+			let constructors: ConstructorGen[]  = classExtra ? classExtra.constructors.constructors.slice() : []
+			let foundConstructors               = classExtra ? classExtra.constructors.foundConstructors : 0
+			let extraBanFields : StringSet      = classExtra ? classExtra.banFields : emptyMap()
 
 			// Get superclass
 			// Neither "heritageClauses" nor "types" are exposed. CHEAT: 
@@ -613,49 +626,55 @@ class GenVendor {
 	pseudoClassGen(sym: ts.Symbol, tsType: ts.Type) {
 		let typeMembers = tsType.symbol.members
 		let constructor = typeMembers['__new']
-		let name = sym.name
-		let typeIsSelf = tsType.symbol === sym
+		
+		let classExtraSource = () => {
+			let name = sym.name
+			let typeIsSelf = tsType.symbol === sym
 
-		if (!typeIsSelf) {
-			let constructorClass = this.classGen(tsType.symbol, true)
-			constructorClass.suppress = true
-		}
-
-		let constructorSpec = constructor ? this.constructorSpec(constructor.declarations, name) : null
-
-		let fields: IdentifierGen[] = []
-		let methods: SignatureGen[] = []
-		let extraBanFields : StringSet = emptyMap()
-
-		// CHEAT: The members cheat again, see classGen
-		for (let key in typeMembers as any) {
-			let member = typeMembers[key]
-			let memberType = typeChecker.getTypeOfSymbolAtLocation(member, sourceFile.endOfFileToken)
-			
-			// Member is a field
-			if (hasBit(member.flags, ts.SymbolFlags.Property)) {
-				fields = fields.concat( this.field(member, memberType, name, null, true) ) // True because these are statics
-
-			// Member is a method
-			} else if (hasBit(member.flags, ts.SymbolFlags.Method)) {
-				methods = methods.concat( this.methods(member, memberType, name, true) )
-
-			// Member is unsupported
-			} else {
-				warn(`Could not figure out how to translate member ${member.name} of class ${name}`)
+			if (!typeIsSelf) {
+				let constructorClass = this.classGen(tsType.symbol, true)
+				constructorClass.suppress = true
 			}
-		}
 
-		// This is an attempt to prevent static fields inherited via prototype from unhelpfully appearing in object instances.
-		for (let field of fields)
-			extraBanFields[field.name] = true
-		if (typeIsSelf)
-			for (let method of methods)
-				extraBanFields[method.name] = true
+			let constructorSpec = constructor ? this.constructorSpec(constructor.declarations, name) : new ConstructorSpec()
+
+			let fields: IdentifierGen[] = []
+			let methods: SignatureGen[] = []
+			let extraBanFields : StringSet = emptyMap()
+
+			// CHEAT: The members cheat again, see classGen
+			for (let key in typeMembers as any) {
+				let member = typeMembers[key]
+				let memberType = typeChecker.getTypeOfSymbolAtLocation(member, sourceFile.endOfFileToken)
+				
+				// Member is a field
+				if (hasBit(member.flags, ts.SymbolFlags.Property)) {
+					fields = fields.concat( this.field(member, memberType, name, null, true) ) // True because these are statics
+
+				// Member is a method
+				} else if (hasBit(member.flags, ts.SymbolFlags.Method)) {
+					methods = methods.concat( this.methods(member, memberType, name, true) )
+
+				// Member is unsupported
+				} else {
+					warn(`Could not figure out how to translate member ${member.name} of class ${name}`)
+				}
+			}
+
+			// This is an attempt to prevent static fields inherited via prototype from unhelpfully appearing in object instances.
+			for (let field of fields)
+				extraBanFields[field.name] = true
+			if (typeIsSelf)
+				for (let method of methods)
+					extraBanFields[method.name] = true
+
+			return new ClassExtraSpec(constructorSpec, new MemberSpec(fields, methods), extraBanFields)
+		}
 
 		// Abstract if no constructor was found
-		let resultClass = this.classGen(sym, !constructorSpec, constructorSpec, new MemberSpec(fields, methods), extraBanFields)
-		return resultClass
+		try {
+		return this.classGen(sym, !constructor, classExtraSource)
+		} catch (e) { warn(`FAILING ON ${sym.name} WITH ${e}`); throw e }
 	}
 
 	typeGen(tsType: ts.Type) : TypeGen {
@@ -667,8 +686,12 @@ class GenVendor {
 			return new LiteralTypeGen("void")
 		if (tsType.flags & ts.TypeFlags.Boolean)
 			return new LiteralTypeGen("bool")
-		if ((tsType.flags & ts.TypeFlags.Class) && tsType.symbol)
+		if ((tsType.flags & (ts.TypeFlags.Class | ts.TypeFlags.Interface)) && tsType.symbol) {
+			if (tsType.symbol.flags & (ts.SymbolFlags.BlockScopedVariable | ts.SymbolFlags.FunctionScopedVariable))
+				return this.pseudoClassGen(tsType.symbol, tsType)
+
 			return this.classGen(tsType.symbol)
+		}
 
 		if (tsType.flags & ts.TypeFlags.Anonymous) {
 			let callSignatures = tsType.getCallSignatures()
@@ -728,7 +751,7 @@ for (let sym of typeChecker.getSymbolsInScope(sourceFile.endOfFileToken, 0xFFFFF
 		if (hasBit(sym.flags, ts.SymbolFlags.Class)) {
 			generators.push( vendor.classGen(sym) )
 
-		} else if (hasBit(sym.flags, ts.SymbolFlags.BlockScopedVariable) || hasBit(sym.flags, ts.SymbolFlags.FunctionScopedVariable)) {
+		} else if (sym.flags & (ts.SymbolFlags.BlockScopedVariable | ts.SymbolFlags.FunctionScopedVariable)) {
 			if (hasBit(sym.flags, ts.SymbolFlags.Interface))
 				generators.push( vendor.pseudoClassGen(sym, type) )
 			else
