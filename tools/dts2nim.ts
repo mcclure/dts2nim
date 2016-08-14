@@ -48,10 +48,11 @@ console.log()
 
 // Support
 
+// Note I don't use Set/Map due to weirdness around TypeScript not expecthing them present in ES5
 function emptyMap() { return Object.create(null) }
+interface StringSet { [key:string] : boolean }
 
-
-let blacklist : {[key:string] : boolean} = emptyMap() // TODO: Could I just use Set()?
+let blacklist : StringSet = emptyMap()
 for (let key of ["static:prototype", "class:NodeList", "class:Array", "class:ArrayConstructor",
 	"Element.webkitRequestFullScreen",
 	"HTMLVideoElement.webkitEnterFullscreen", "HTMLVideoElement.webkitExitFullscreen",
@@ -96,7 +97,7 @@ function capitalizeFirstLetter(str:string) : string {
 	return str.charAt(0).toUpperCase() + str.slice(1)
 }
 
-let reserved : {[name:string] : boolean} = emptyMap()
+let reserved : StringSet = emptyMap()
 for (let name of ["addr", "and", "as", "asm", "atomic", "bind", "block", "break", "case", "cast",
 	"concept", "const", "continue", "converter", "defer", "discard", "distinct", "div", "do",
 	"elif", "else", "end", "enum", "except", "export", "finally", "for", "from", "func", "generic",
@@ -504,7 +505,7 @@ class GenVendor {
 		return methods
 	}
 
-	classGen(sym: ts.Symbol, abstract = false, withConstructors: ConstructorSpec = null, withStatics: MemberSpec = null) : ClassGen {
+	classGen(sym: ts.Symbol, abstract = false, withConstructors: ConstructorSpec = null, withStatics: MemberSpec = null, extraBanFields: StringSet = {}) : ClassGen {
 		let name = sym.name
 		let already = this.classes[name]
 		if (already) {
@@ -557,6 +558,10 @@ class GenVendor {
 
 				// Member is a field
 				} else if (hasBit(member.flags, ts.SymbolFlags.Property)) {
+					// Okay: This one's a bit odd.
+					if (extraBanFields[member.name])
+						continue
+
 					fields = fields.concat( this.field(member, memberType, name, inherit) )
 
 				// Member is a method
@@ -623,6 +628,7 @@ class GenVendor {
 
 			let fields: IdentifierGen[] = []
 			let methods: SignatureGen[] = []
+			let extraBanFields : StringSet = emptyMap()
 
 			// CHEAT: The members cheat again, see classGen
 			for (let key in typeMembers as any) {
@@ -643,7 +649,11 @@ class GenVendor {
 				}
 			}
 
-			let resultClass = this.classGen(sym, false, constructorSpec, new MemberSpec(fields, methods))
+			// This is an attempt to prevent static fields inherited via prototype from unhelpfully appearing in object instances.
+			for (let field of fields)
+				extraBanFields[field.name] = true
+
+			let resultClass = this.classGen(sym, false, constructorSpec, new MemberSpec(fields, methods), extraBanFields)
 			return resultClass
 		} else {
 			// Not sure what this is, fall back on just treating it like an interface
