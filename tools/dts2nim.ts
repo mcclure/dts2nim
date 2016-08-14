@@ -53,16 +53,8 @@ function emptyMap() { return Object.create(null) }
 interface StringSet { [key:string] : boolean }
 
 let blacklist : StringSet = emptyMap()
-for (let key of ["static:prototype", "class:NodeList", "class:Array", "class:ArrayConstructor",
-	"Element.webkitRequestFullScreen",
-	"HTMLVideoElement.webkitEnterFullscreen", "HTMLVideoElement.webkitExitFullscreen",
-	"class:PerformanceMark", "class:PerformanceMeasure",
-	"WebGLRenderingContext.activeTexture", "WebGLRenderingContext.blendColor",
-	"WebGLRenderingContext.blendEquation", "WebGLRenderingContext.cullFace",
-	"WebGLRenderingContext.depthFunc", "WebGLRenderingContext.depthRange",
-	"WebGLRenderingContext.frontFace", "WebGLRenderingContext.lineWidth",
-	"WebGLRenderingContext.sampleCoverage", "WebGLRenderingContext.stencilFunc",
-	"WebGLRenderingContext.viewport", "WebGLRenderingContext.stencilFunc"])
+for (let key of ["static:prototype",
+	"Element.webkitRequestFullScreen", "HTMLVideoElement.webkitEnterFullscreen", "HTMLVideoElement.webkitExitFullscreen"])
 	blacklist[key] = true
 function blacklisted(nspace:string, name1:string, name2:string = null) : boolean {
 	if (name2) {
