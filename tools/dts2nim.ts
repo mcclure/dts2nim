@@ -15,6 +15,7 @@ let error = require('commander.js-error')
 commander
 	.version("0.0.1")
 	.option('-q, --quiet', 'Suppress warnings')
+	.option('--staticShadow', 'Block static members from being inherited by objects')
 	.option('--debugPrefix [prefix]', 'Print additional information for symbols starting with...')
 	.option('--debugVerbose', 'Dump entire object when printing debug information')
 	.arguments("<file>")
@@ -682,11 +683,13 @@ class GenVendor {
 			}
 
 			// This is an attempt to prevent static fields inherited via prototype from unhelpfully appearing in object instances.
-			for (let field of fields)
-				extraBanFields[field.name] = true
-			if (typeIsSelf)
-				for (let method of methods)
-					extraBanFields[method.name] = true
+			if (commander.staticShadow) {
+				for (let field of fields)
+					extraBanFields[field.name] = true
+				if (typeIsSelf) // Only shadow methods for enum-type/module-type pseudoclasses. // FIXME: Does this actually make sense?
+					for (let method of methods)
+						extraBanFields[method.name] = true
+			}
 
 			return new ClassExtraSpec(constructorSpec, new MemberSpec(fields, methods), extraBanFields)
 		}
