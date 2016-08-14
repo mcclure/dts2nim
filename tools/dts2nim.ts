@@ -48,8 +48,11 @@ console.log()
 
 // Support
 
-let blacklist : {[key:string] : boolean} = {} // TODO: Could I just use Set()?
-for (let key of ["class:NodeList", "class:Array", "class:ArrayConstructor",
+function emptyMap() { return Object.create(null) }
+
+
+let blacklist : {[key:string] : boolean} = emptyMap() // TODO: Could I just use Set()?
+for (let key of ["static:prototype", "class:NodeList", "class:Array", "class:ArrayConstructor",
 	"Element.webkitRequestFullScreen",
 	"HTMLVideoElement.webkitEnterFullscreen", "HTMLVideoElement.webkitExitFullscreen",
 	"class:PerformanceMark", "class:PerformanceMeasure",
@@ -60,8 +63,14 @@ for (let key of ["class:NodeList", "class:Array", "class:ArrayConstructor",
 	"WebGLRenderingContext.sampleCoverage", "WebGLRenderingContext.stencilFunc",
 	"WebGLRenderingContext.viewport", "WebGLRenderingContext.stencilFunc"])
 	blacklist[key] = true
-function blacklisted(nspace:string, name:string) : boolean {
-	return blacklist[name] || blacklist[nspace + ":" + name]
+function blacklisted(nspace:string, name1:string, name2:string = null) : boolean {
+	if (name2) {
+		let combined = name1 + "." + name2
+		return blacklist[name2] || blacklist[nspace + ":" + name2]
+			|| blacklist[combined] || blacklist[nspace + ":" + combined]
+	} else {
+		return blacklist[name1] || blacklist[nspace + ":" + name1]
+	}
 }
 
 // Assume enum is a bitfield, print all relevant bits.
@@ -87,7 +96,7 @@ function capitalizeFirstLetter(str:string) : string {
 	return str.charAt(0).toUpperCase() + str.slice(1)
 }
 
-let reserved : {[name:string] : boolean} = {}
+let reserved : {[name:string] : boolean} = emptyMap()
 for (let name of ["addr", "and", "as", "asm", "atomic", "bind", "block", "break", "case", "cast",
 	"concept", "const", "continue", "converter", "defer", "discard", "distinct", "div", "do",
 	"elif", "else", "end", "enum", "except", "export", "finally", "for", "from", "func", "generic",
@@ -367,7 +376,7 @@ function chainHasField(gen:ClassGen, name:string) : boolean {
 class GenVendor {
 	classes: {[name:string] : ClassGen}
 	constructor() {
-		this.classes = {}
+		this.classes = emptyMap()
 	}
 
 	variableGen(sym: ts.Symbol, tsType: ts.Type) : VariableGen {
@@ -380,7 +389,7 @@ class GenVendor {
 		} catch (_e) {
 			let e:{} = _e
 			if (e instanceof UnusableType)
-				throw new GenConstructFail("Could not translate variable "+sym.name+" because couldn't translate type "+typeChecker.typeToString(e.type))
+				throw new GenConstructFail(`Could not translate variable ${sym.name} because couldn't translate type ${typeChecker.typeToString(e.type)}`)
 			else
 				throw e
 		}
@@ -451,7 +460,7 @@ class GenVendor {
 		let fields : IdentifierGen[] = []
 		let staticTag = isStatic ? "static " : ""
 		try {
-			if (blacklisted(isStatic ? "static" : "field", ownerName + "." + member.name))
+			if (blacklisted(isStatic ? "static" : "field", ownerName, member.name))
 				warn(`Refusing to translate blacklisted ${staticTag}field ${member.name} of class ${ownerName}`)
 			else if (!(inherit && chainHasField(inherit, member.name)))
 				fields.push(new (isStatic ? VariableGen : FieldGen)(member.name, this.typeGen(memberType)))
@@ -459,7 +468,7 @@ class GenVendor {
 			let e:{} = _e
 			if (e instanceof UnusableType)
 				warn(`Could not translate ${staticTag}field ${member.name} on class ${ownerName}`
-				  +  `because couldn't translate type ${typeChecker.typeToString(e.type)}`
+				  +  ` because couldn't translate type ${typeChecker.typeToString(e.type)}`
 				)
 			else
 				throw _e
@@ -470,7 +479,7 @@ class GenVendor {
 	methods(member: ts.Symbol, memberType: ts.Type, ownerName: string, isStatic = false) : SignatureGen[] {
 		let methods : SignatureGen[] = []
 		let staticTag = isStatic ? "static " : ""
-		if (blacklisted(isStatic ? "static" : "field", ownerName + "." + member.name)) {
+		if (blacklisted(isStatic ? "static" : "field", ownerName, member.name)) {
 			warn(`Refusing to translate blacklisted ${staticTag}method ${member.name} of class ${ownerName}`)
 		} else {
 			let counter = 0
@@ -498,7 +507,7 @@ class GenVendor {
 	classGen(sym: ts.Symbol, abstract = false, withConstructors: ConstructorSpec = null, withStatics: MemberSpec = null) : ClassGen {
 		let name = sym.name
 		let already = this.classes[name]
-		if (already) { // FIXME: will freak out on "prototype"
+		if (already) {
 			if (already.invalid)
 				throw new GenConstructFail("Tried to reuse unbuildable type") // FIXME: Should be an UnusableType
 			return already
