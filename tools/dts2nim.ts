@@ -550,7 +550,6 @@ class GenVendor {
 
 				// Member is a field
 				} else if (hasBit(member.flags, ts.SymbolFlags.Property)) {
-					// Okay: This one's a bit odd.
 					if (extraBanFields[member.name])
 						continue
 
@@ -558,6 +557,9 @@ class GenVendor {
 
 				// Member is a method
 				} else if (hasBit(member.flags, ts.SymbolFlags.Method)) {
+					if (extraBanFields[member.name])
+						continue
+
 					methods = methods.concat( this.methods(member, memberType, name) )
 
 				// Member is unsupported
@@ -611,46 +613,49 @@ class GenVendor {
 	pseudoClassGen(sym: ts.Symbol, tsType: ts.Type) {
 		let typeMembers = tsType.symbol.members
 		let constructor = typeMembers['__new']
-		if (constructor) {
-			let name = sym.name
+		let name = sym.name
+		let typeIsSelf = tsType.symbol === sym
+
+		if (!typeIsSelf) {
 			let constructorClass = this.classGen(tsType.symbol, true)
 			constructorClass.suppress = true
-
-			let constructorSpec = this.constructorSpec(constructor.declarations, name)
-
-			let fields: IdentifierGen[] = []
-			let methods: SignatureGen[] = []
-			let extraBanFields : StringSet = emptyMap()
-
-			// CHEAT: The members cheat again, see classGen
-			for (let key in typeMembers as any) {
-				let member = typeMembers[key]
-				let memberType = typeChecker.getTypeOfSymbolAtLocation(member, sourceFile.endOfFileToken)
-				
-				// Member is a field
-				if (hasBit(member.flags, ts.SymbolFlags.Property)) {
-					fields = fields.concat( this.field(member, memberType, name, null, true) ) // True because these are statics
-
-				// Member is a method
-				} else if (hasBit(member.flags, ts.SymbolFlags.Method)) {
-					methods = methods.concat( this.methods(member, memberType, name, true) )
-
-				// Member is unsupported
-				} else {
-					warn(`Could not figure out how to translate member ${member.name} of class ${name}`)
-				}
-			}
-
-			// This is an attempt to prevent static fields inherited via prototype from unhelpfully appearing in object instances.
-			for (let field of fields)
-				extraBanFields[field.name] = true
-
-			let resultClass = this.classGen(sym, false, constructorSpec, new MemberSpec(fields, methods), extraBanFields)
-			return resultClass
-		} else {
-			// Not sure what this is, fall back on just treating it like an interface
-			return this.classGen(sym, true)
 		}
+
+		let constructorSpec = constructor ? this.constructorSpec(constructor.declarations, name) : null
+
+		let fields: IdentifierGen[] = []
+		let methods: SignatureGen[] = []
+		let extraBanFields : StringSet = emptyMap()
+
+		// CHEAT: The members cheat again, see classGen
+		for (let key in typeMembers as any) {
+			let member = typeMembers[key]
+			let memberType = typeChecker.getTypeOfSymbolAtLocation(member, sourceFile.endOfFileToken)
+			
+			// Member is a field
+			if (hasBit(member.flags, ts.SymbolFlags.Property)) {
+				fields = fields.concat( this.field(member, memberType, name, null, true) ) // True because these are statics
+
+			// Member is a method
+			} else if (hasBit(member.flags, ts.SymbolFlags.Method)) {
+				methods = methods.concat( this.methods(member, memberType, name, true) )
+
+			// Member is unsupported
+			} else {
+				warn(`Could not figure out how to translate member ${member.name} of class ${name}`)
+			}
+		}
+
+		// This is an attempt to prevent static fields inherited via prototype from unhelpfully appearing in object instances.
+		for (let field of fields)
+			extraBanFields[field.name] = true
+		if (typeIsSelf)
+			for (let method of methods)
+				extraBanFields[method.name] = true
+
+		// Abstract if no constructor was found
+		let resultClass = this.classGen(sym, !constructorSpec, constructorSpec, new MemberSpec(fields, methods), extraBanFields)
+		return resultClass
 	}
 
 	typeGen(tsType: ts.Type) : TypeGen {
