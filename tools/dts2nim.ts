@@ -61,8 +61,6 @@ for (let key of [
 	"Element.webkitRequestFullScreen", "HTMLVideoElement.webkitEnterFullscreen", "HTMLVideoElement.webkitExitFullscreen",
 	// Can't translate without module support
 	"class:CollatorOptions", "class:CSSRule", "class:DateTimeFormatOptions", "class:NumberFormatOptions", "class:Plugin",
-	// Can't translate without mutual recursion
-	"class:EventTarget", "class:Document", "class:Window", "class:SourceBuffer"
 	])
 	blacklist[key] = true
 
@@ -150,7 +148,7 @@ function concatAll<T>(x:T[][]) : T[] {
 	return [].concat.apply([], x)
 }
 
-function joinPrefix(a: string[], prefix: string) {
+function joinPrefixed(a: string[], prefix: string) {
 	return a.map(g => prefix + g).join("")
 }
 
@@ -342,17 +340,24 @@ class ClassGen implements TypeGen { // TODO: Make name optional?
 	}
 
 	declString() : string {
+		return "type " + this.declStringInternal() + this.declStringExternal()
+	}
+
+	// The part of the declaration inside and outside the type is split out here for the benefit of CollectionGen
+	declStringInternal() : string {
+		return `${identifierScrub(this.name)}* {.${importDirective(this.name)}.} = ref object of `
+		     + (this.inherit ? identifierScrub(this.inherit.name) : "RootObj")
+			 + genJoinPrefixed(this.members.fields, "\n    ") // Four spaces
+	}
+	declStringExternal() : string {
 		let fullMethods: Gen[] = this.members.methods
 		if (!this.abstract)
 			fullMethods = (this.constructors as Gen[]).concat( fullMethods )
-
-		return `type ${identifierScrub(this.name)}* {.${importDirective(this.name)}.} = ref object of `
-		     + (this.inherit ? identifierScrub(this.inherit.name) : "RootObj")
-			 + genJoinPrefixed(this.members.fields, "\n    ")
-		     + genJoinPrefixed(fullMethods, "\n")
+		return genJoinPrefixed(fullMethods, "\n")
 			 + genJoinPrefixed(this.statics.fields, "\n", this.name)
 		     + genJoinPrefixed(this.statics.methods, "\n", this.name)
 	}
+
 	typeString() {
 		return this.name
 	}
@@ -364,6 +369,31 @@ class ClassGen implements TypeGen { // TODO: Make name optional?
 		).concat( this.inherit ? [this.inherit.dependKey()] : [] )
 	}
 	dependKey() { return this.name }
+}
+
+// A group of mutually recursive types
+class CollectionGen implements Gen {
+	constructor(public gens: Gen[]) {}
+
+	declString() : string {
+		let classGens: ClassGen[] = []
+		let gens: Gen[] = []
+		for (let gen of this.gens) {
+			if (gen instanceof ClassGen)
+				classGens.push(gen)
+			else
+				gens.push(gen) // This ought to be empty
+		}
+
+		return "type"
+			 + joinPrefixed(classGens.map(gen => gen.declStringInternal()), "\n  ") // Two spaces
+			 + classGens.map(gen => gen.declStringExternal()).join("")
+			 + genJoinPrefixed(gens, "\n")
+	}
+
+	// In theory these will not be used
+	depends() { return allDepends(this.gens) }
+	dependKey() { return this.gens.map(x => x.dependKey).join("-") }
 }
 
 class ClassExtraSpec {
@@ -508,6 +538,10 @@ class GenVendor {
 		}
 
 		return methods
+	}
+
+	collectionGen(gens : Gen[]) {
+		return new CollectionGen(gens)
 	}
 
 	classGen(sym: ts.Symbol, tsType: ts.Type, abstract = false, classExtraSource: () => ClassExtraSpec = null) : ClassGen {
@@ -821,11 +855,10 @@ let groupedGenerators : Gen[][] =
 let sortedGenerators : Gen[] = []
 for (let group of groupedGenerators) {
 	if (group.length > 1) {
-		warn("Can't translate mutually recursive types, so ignoring: "
-		   + (group.map(x => x.dependKey())).join(", ")) // This is a misuse of dependKey
+		sortedGenerators.push( vendor.collectionGen(group.filter(gen => !gen.suppress)) )
 	} else if (group[0]) { // TODO: Delete nodes that depend on nonexistent things
 		if (!group[0].suppress)
-		sortedGenerators.push(group[0])
+			sortedGenerators.push(group[0])
 	}
 }
 
