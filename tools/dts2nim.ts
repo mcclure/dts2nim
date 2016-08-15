@@ -11,6 +11,7 @@ import ts = require("typescript")
 import util = require("util")
 let commander = require("commander")
 let error = require('commander.js-error')
+let graphlib = require("graphlib")
 
 commander
 	.version("0.0.1")
@@ -59,6 +60,7 @@ for (let key of [
 	"static:prototype",
 	// Can't translate without namespace collision handling
 	"Element.webkitRequestFullScreen", "HTMLVideoElement.webkitEnterFullscreen", "HTMLVideoElement.webkitExitFullscreen",
+	"static:Event.target", "static:Performance.navigation", "static:Performance.timing",
 	// Can't translate without module support
 	"class:CollatorOptions", "class:CSSRule", "class:DateTimeFormatOptions", "class:NumberFormatOptions", "class:Plugin",
 	])
@@ -150,6 +152,11 @@ function concatAll<T>(x:T[][]) : T[] {
 
 function joinPrefixed(a: string[], prefix: string) {
 	return a.map(g => prefix + g).join("")
+}
+
+function tarjanResults(graph) {
+	return graphlib.alg.tarjan(graph)
+		.map( scc => scc.map( id => graph.node(id) ) )
 }
 
 // Exceptions
@@ -376,13 +383,29 @@ class CollectionGen implements Gen {
 	constructor(public gens: Gen[]) {}
 
 	declString() : string {
-		let classGens: ClassGen[] = []
+		let inheritance = new graphlib.Graph()
 		let gens: Gen[] = []
 		for (let gen of this.gens) {
-			if (gen instanceof ClassGen)
-				classGens.push(gen)
-			else
+			if (gen instanceof ClassGen) {
+				let key = gen.dependKey()
+				inheritance.setNode(key, gen)
+				if (gen.inherit)
+					inheritance.setEdge(key, gen.inherit.dependKey())
+			}
+			else {
 				gens.push(gen) // This ought to be empty
+			}
+		}
+
+		// Need to do a quick graph sort to make sure types are printed after their parents
+		let groupedClassGens : ClassGen[][] = tarjanResults(inheritance)
+		let classGens: ClassGen[] = []
+		for (let group of groupedClassGens) {
+			if (group.length > 1) // This should be impossible, given filtering which has occurred already?
+				warn("The following types were ignored because they appear to have an inheritance cycle:"
+                  + (group.map(x => x.dependKey())).join(", ")) // This is a misuse of dependKey
+			else if (group[0]) // if !group[0] then a class inherits from something outside the collection
+				classGens.push(group[0])
 		}
 
 		return "type"
@@ -836,7 +859,6 @@ for (let sym of typeChecker.getSymbolsInScope(sourceFile.endOfFileToken, 0xFFFFF
 // We now have a list of all symbols in alphabetical order. We need to sort them in order of
 // relative dependency, and if any of the symbols are mutually recursive types we need to know that
 // too. The tarjan algorithm (strongly connected components, reverse topological sort) does both
-let graphlib = require("graphlib")
 let dependencies = new graphlib.Graph()
 for (let gen of generators) {
 	let key = gen.dependKey()
@@ -845,12 +867,7 @@ for (let gen of generators) {
 		dependencies.setEdge(key, dep)
 }
 
-//for(let group of graphlib.alg.tarjan(dependencies))
-//	console.log(group, dependencies.node(group[0]) != null)
-
-let groupedGenerators : Gen[][] =
-	graphlib.alg.tarjan(dependencies)
-	.map( scc => scc.map( id => dependencies.node(id) ) )
+let groupedGenerators : Gen[][] = tarjanResults(dependencies)
 
 let sortedGenerators : Gen[] = []
 for (let group of groupedGenerators) {
