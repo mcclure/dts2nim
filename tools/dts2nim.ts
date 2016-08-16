@@ -61,6 +61,7 @@ for (let key of [
 	// Can't translate without namespace collision handling
 	"Element.webkitRequestFullScreen", "HTMLVideoElement.webkitEnterFullscreen", "HTMLVideoElement.webkitExitFullscreen",
 	"static:Event.target", "static:Performance.navigation", "static:Performance.timing",
+	"MSAppAsyncOperation.ERROR", "MSWebViewAsyncOperation.ERROR",
 	// Can't translate without module support
 	"class:CollatorOptions", "class:CSSRule", "class:DateTimeFormatOptions", "class:NumberFormatOptions", "class:Plugin",
 	])
@@ -324,26 +325,38 @@ class MemberSpec {
 	constructor(public fields: IdentifierGen[], public methods: SignatureGen[]) {}
 }
 
+enum ClassInitPhase {
+	Zero,
+	InheritanceInProgress,
+	Inheritance,
+	FullInProgress,
+	Full,
+	Invalid
+}
+
 class ClassGen implements TypeGen { // TODO: Make name optional?
 	// Inherit may be null. "abstract" refers to a class that can be inherited from but not instantiated.
 	inherit: ClassGen
 	constructors: ConstructorGen[]
 	members: MemberSpec
 	statics: MemberSpec
-	inited: boolean    // Has been fully instantiated
-	invalid: boolean       // If true, could be instantiated; do not store anywhere except the cache (stores exception)
+
+	initPhase: ClassInitPhase
+	tempSymbol: ts.Symbol
+	tempExtraSource: () => ClassExtraSpec
 	suppress: boolean  // Can and maybe has been instantiated, but shouldn't be output to file
-	constructor(public name: string, public abstract: boolean) {}
-	init(inherit:ClassGen, constructors: ConstructorGen[], fields: IdentifierGen[], methods: SignatureGen[], staticFields: IdentifierGen[], staticMethods: SignatureGen[]) {
-		this.inherit = inherit
+	constructor(public name: string, public abstract: boolean) {
+		this.initPhase = ClassInitPhase.Zero
+	}
+	init(constructors: ConstructorGen[], fields: IdentifierGen[], methods: SignatureGen[], staticFields: IdentifierGen[], staticMethods: SignatureGen[]) {
 		this.constructors = constructors
 		this.members = new MemberSpec(fields, methods)
 		this.statics = new MemberSpec(staticFields, staticMethods)
-		this.inited = true
 		for (let constructor of constructors)
 			constructor.owner = this
 		for (let method of methods)
 			method.owner = this
+		this.initPhase = ClassInitPhase.Full
 	}
 
 	declString() : string {
@@ -567,7 +580,13 @@ class GenVendor {
 		return new CollectionGen(gens)
 	}
 
-	classGen(sym: ts.Symbol, tsType: ts.Type, abstract = false, classExtraSource: () => ClassExtraSpec = null) : ClassGen {
+	// Some notes on ClassGen init phases: Initialization happens in two phases.
+	// Inheritance load: The class object is created. The inherit field is filled out. (This phase can fail.)
+	// Full load: All fields are filled out, all member fields, methods, constructors etc are known. (This phase can't fail.)
+	// When the symbol list is being iterated, each class is given a full load as it is reached.
+	// If a field is full loaded, all its ancestors get full loads first (so constructors and fields can be compared)
+	// If a class references another class in a field/method/etc, that class and all its ancestors get inheritance loads (so it is known if they failed).
+	classGen(sym: ts.Symbol, tsType: ts.Type, fullLoad = false, abstract = false, classExtraSource: () => ClassExtraSpec = null) : ClassGen {
 		function classType() {
 			if (!tsType)
 				tsType = typeChecker.getTypeOfSymbolAtLocation(sym, sourceFile.endOfFileToken)
@@ -577,23 +596,86 @@ class GenVendor {
 		function classKind() { return abstract ? "interface" : "class" }
 
 		let name = sym.name
-		let already = this.classes[name]
-		if (already) {
-			if (already.invalid)
+		let result = this.classes[name]
+		if (result) {
+			if (result.initPhase == ClassInitPhase.Invalid)
 				throw classUnusableType()
-			return already
+			if (result.initPhase == ClassInitPhase.Full
+					|| (!fullLoad && result.initPhase >= ClassInitPhase.InheritanceInProgress))
+				return result
+			if (result.initPhase == ClassInitPhase.FullInProgress)
+				throw new CustomError("Class ${name} somehow attempted to do a full init while a full init is already in progress. This should be impossible.")
 		}
 
-		if (blacklisted("class", name)) {
-			warn("Refusing to translate blacklisted ${classKind()} " + name)
-			throw classUnusableType()
+		if (!result) {
+			result = new ClassGen(name, abstract)
+			this.classes[name] = result
 		}
-
-		let result = new ClassGen(name, abstract)
-		this.classes[name] = result
 
 		try {
-			let classExtra = classExtraSource ? classExtraSource() : null
+			if (result.initPhase < ClassInitPhase.Inheritance) {
+				result.initPhase = ClassInitPhase.InheritanceInProgress
+
+				if (blacklisted("class", name)) {
+					warn("Refusing to translate blacklisted ${classKind()} " + name)
+					throw classUnusableType()
+				}
+
+				// Get superclass
+				// Neither "heritageClauses" nor "types" are exposed. CHEAT:
+				let heritageClauses = (sym.declarations[0] as any).heritageClauses
+				
+				if (heritageClauses) {
+					let inheritSymbol = typeChecker.getSymbolAtLocation(heritageClauses[0].types[0].expression)
+
+					let inheritName = inheritSymbol.name
+
+					let inherit = vendor.classGen(inheritSymbol, null)
+
+					if (inherit.initPhase < ClassInitPhase.Inheritance) { // Don't check for invalid, classGen will throw if needed
+						warn(`${classKind()} ${name} has an inheritance loop with its ancestor ${inheritName}`)
+						throw classUnusableType()
+					}
+
+					result.inherit = inherit
+				}
+				result.tempSymbol = sym
+				result.tempExtraSource = classExtraSource
+				result.initPhase = ClassInitPhase.Inheritance
+			}
+
+			if (fullLoad)
+				this.classInit(result)
+
+			return result
+		} catch (_e) {
+			let e:{} = _e
+			result.initPhase = ClassInitPhase.Invalid
+			if (e instanceof UnusableType && e.type !== classType()) { // TODO: This would be unnecessary with try-catches above.
+				warn(`Could not translate ${classKind()} ${name} because could not translate type `
+					+ typeChecker.typeToString(e.type))
+				throw classUnusableType()
+			}
+			throw(e)
+		}
+	}
+
+	classInit(result: ClassGen) {
+		try {			
+			let name = result.name
+
+			if (result.initPhase == ClassInitPhase.Full)
+				return
+			else if (result.initPhase != ClassInitPhase.Inheritance)
+				throw new CustomError(`Attempted to perform full init on class ${name} while it is in a seemingly impossible state (${result.initPhase}, expected ${ClassInitPhase.Inheritance}).`)
+
+			result.initPhase = ClassInitPhase.FullInProgress
+
+			if (result.inherit)
+				this.classInit(result.inherit)
+
+			let sym = result.tempSymbol
+			let classExtra = result.tempExtraSource ? result.tempExtraSource() : null
 			let fields : IdentifierGen[] = []
 			let methods: SignatureGen[] = []
 			let staticFields : IdentifierGen [] = classExtra ? classExtra.statics.fields.slice() : []
@@ -601,24 +683,6 @@ class GenVendor {
 			let constructors: ConstructorGen[]  = classExtra ? classExtra.constructors.constructors.slice() : []
 			let foundConstructors               = classExtra ? classExtra.constructors.foundConstructors : 0
 			let extraBanFields : StringSet      = classExtra ? classExtra.banFields : emptyMap()
-
-			// Get superclass
-			// Neither "heritageClauses" nor "types" are exposed. CHEAT: 
-			let heritageClauses = (sym.declarations[0] as any).heritageClauses
-			let inherit:ClassGen = null
-
-			if (heritageClauses) {
-				let inheritSymbol = typeChecker.getSymbolAtLocation(heritageClauses[0].types[0].expression)
-
-				let inheritName = inheritSymbol.name
-
-				inherit = vendor.classGen(inheritSymbol, null)
-
-				if (!inherit.inited) { // FIXME: THIS WILL SOMETIMES OCCUR IN LEGITIMATE CIRCUMSTANCES. FIX WHEN MUTUAL RECURSION BECOMES ALLOWED
-					warn(`${classKind()} ${name} is mutually recursive with its ancestor ${inheritName} in a confusing way`)
-					throw classUnusableType()
-				}
-			}
 
 			// Iterate over class members
 			// Public interface for SymbolTable lets you look up keys but not iterate them. CHEAT:
@@ -637,7 +701,7 @@ class GenVendor {
 					if (extraBanFields[member.name])
 						continue
 
-					fields = fields.concat( this.field(member, memberType, name, inherit) )
+					fields = fields.concat( this.field(member, memberType, name, result.inherit) )
 
 				// Member is a method
 				} else if (hasBit(member.flags, ts.SymbolFlags.Method)) {
@@ -659,7 +723,7 @@ class GenVendor {
 
 				// Static member is a field
 				if (hasBit(member.flags, ts.SymbolFlags.Property)) {
-					staticFields = staticFields.concat( this.field(member, memberType, name, inherit, true) )
+					staticFields = staticFields.concat( this.field(member, memberType, name, result.inherit, true) )
 
 				// Static member is a method
 				} else if (hasBit(member.flags, ts.SymbolFlags.Method)) {
@@ -673,8 +737,8 @@ class GenVendor {
 
 			// Get constructor
 			if (!foundConstructors) {
-				if (inherit && inherit.constructors) {
-					for (let constructor of inherit.constructors) {
+				if (result.inherit && result.inherit.constructors) {
+					for (let constructor of result.inherit.constructors) {
 						constructors.push(new ConstructorGen( constructor.params ))
 					}
 				} else {
@@ -682,17 +746,13 @@ class GenVendor {
 				}
 			}
 
-			result.init(inherit, constructors, fields, methods, staticFields, staticMethods)
-			return result
-		} catch (_e) {
-			let e:{} = _e
-			result.invalid = true
-			if (e instanceof UnusableType && e.type !== classType()) { // TODO: This would be unnecessary with try-catches above.
-				warn(`Could not translate ${classKind()} ${name} because could not translate type `
-					+ typeChecker.typeToString(e.type))
-				throw classUnusableType()
-			}
-			throw(e)
+			result.init(constructors, fields, methods, staticFields, staticMethods) // Will set init phase full
+		} catch (e) {
+			result.initPhase = ClassInitPhase.Invalid
+			throw e
+		} finally {
+			result.tempSymbol = null
+			result.tempExtraSource = null
 		}
 	}
 
@@ -700,16 +760,17 @@ class GenVendor {
 	// paired with a separate interface describing the class's constructor. The d.ts authors do
 	// this instead of just declaring a class in order to get slightly different scope rules.
 	// This script does not care about scope rules and can safely just collapse into a class.
-	pseudoClassGen(sym: ts.Symbol, tsType: ts.Type) {
+	pseudoClassGen(sym: ts.Symbol, tsType: ts.Type, fullLoad = false) {
 		let typeMembers = tsType.symbol.members
 		let constructor = typeMembers['__new']
-		
+
+		// This is done in a thunk so that classGen can decide when or if to execute it
 		let classExtraSource = () => {
 			let name = sym.name
 			let typeIsSelf = tsType.symbol === sym
 
 			if (!typeIsSelf) {
-				let constructorClass = this.classGen(tsType.symbol, null, false)
+				let constructorClass = this.classGen(tsType.symbol, null)
 				constructorClass.suppress = true
 			}
 
@@ -751,7 +812,7 @@ class GenVendor {
 		}
 
 		// Abstract if no constructor was found
-		return this.classGen(sym, tsType, !constructor, classExtraSource)
+		return this.classGen(sym, tsType, fullLoad, !constructor, classExtraSource)
 	}
 
 	typeGen(tsType: ts.Type) : TypeGen {
@@ -826,17 +887,17 @@ for (let sym of typeChecker.getSymbolsInScope(sourceFile.endOfFileToken, 0xFFFFF
 	try {
 		// Class
 		if (hasBit(sym.flags, ts.SymbolFlags.Class)) {
-			generators.push( vendor.classGen(sym, tsType) )
+			generators.push( vendor.classGen(sym, tsType, true) )
 
 		} else if (sym.flags & (ts.SymbolFlags.BlockScopedVariable | ts.SymbolFlags.FunctionScopedVariable)) {
 			if (hasBit(sym.flags, ts.SymbolFlags.Interface))
-				generators.push( vendor.pseudoClassGen(sym, tsType) )
+				generators.push( vendor.pseudoClassGen(sym, tsType, true) )
 			else
 				generators.push( vendor.variableGen(sym, tsType) )
 
 		// Interface
 		} else if (hasBit(sym.flags, ts.SymbolFlags.Interface)) {
-			generators.push( vendor.classGen(sym, tsType, true) )
+			generators.push( vendor.classGen(sym, tsType, true, true) )
 
 		// Function
 		} else if (hasBit(sym.flags, ts.SymbolFlags.Function)) {
