@@ -66,6 +66,7 @@ let QIgeneric : QCgeneric<number>
 
 class QCrecursive1 {
 	a1: QCrecursive2
+	constructor(public num6: number) {}
 }
 
 class QCrecursive2 {
@@ -74,14 +75,28 @@ class QCrecursive2 {
 	}
 }
 
+class QCrecursive3 {
+	num7: number
+	constructor(v: QCrecursive4 = null) {
+		if (v)
+			this.num7 = v.num7
+	}
+}
+
+class QCrecursive4 extends QCrecursive3 {
+	constructor(v2: number) {
+		super()
+		this.num7 = v2
+	}
+}
+
+let QIrecursive2 = new QCrecursive2(new QCrecursive1(31))
+
 let QFvaraddten = (x:number) => x + 10
 
 let QFvarcallback : (x: number, y: (z: number) => number) => number
 
 QFvarcallback = (x, y) => y(x + 1) + 1
-
-// TODO: Right now we erase mutually exclusive types, but pass through variables typed as one of the erased types 
-// let XR = new XREC2(new XREC1())
 
 // Ugly way to access global variable
 let QFbackflow = () : number => (<any>this).QBbackflow

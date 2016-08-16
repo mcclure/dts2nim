@@ -31,15 +31,19 @@ testAssert(QCChild_numStatic2(3) == 73, "Call static method")
 
 testAssert(QIinterface.str5 == "five", "Read interface instance")
 
+testAssert(QIrecursive2.a2.a1.a2.num6 == 31, "Mutually recursive structures")
+
 let inst1 : QCbase  = newQCbase()
 let inst2 : QCbase  = newQCchild("glow")
 let inst3 : QCgrand = newQCgrand("black")
 let inst4 = newQCorder()
+let inst5 = newQCrecursive3( newQCrecursive4(54) )
 
 testAssert(inst1.add2(17) == 19, "Call method")
 testAssert(inst2.add2(19) == 21, "Call method 2")
 testAssert(inst3.addStr("light") == "blacklight", "Inherit constructor")
 testAssert(inst4.grand.addStr("fish") == "silverfish", "Inherit constructor 2")
+testAssert(inst5.num7 == 54, "Mutually recursive structures 2")
 
 var inner : float = 0
 proc cb(x: float) : float =
