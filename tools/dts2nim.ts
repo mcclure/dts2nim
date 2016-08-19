@@ -210,8 +210,34 @@ function genJoin(a:Gen[], joiner:string) {
 	return a.map(g => g.declString()).join(joiner)
 }
 
-function decls(a: Gen[])  { return genJoin(a, "\n\n") }
-function params(a: Gen[]) { return genJoin(a, ", ") }
+function declsFor(a: Gen[])  { return genJoin(a, "\n\n") }
+
+// FIXME: So the way unions are handled right now is a little weird. paramsGen returns an array of arrays, where each
+// sub-array corresponds to all possible types that could appear at that position. That array of arrays is then passed
+// in here, which generates an array of strings, corresponding to all possible type signatures that could be generated
+// from treating the input as a list of sets.
+//
+// A better way to do ALL of this would for TypeGens to have a flag saying "are you compound?". Consumers of TypeGens
+// that can't handle compoundness could throw when the flag is set, and SignatureTypeGens with compound components
+// could themselves be compound.
+function paramsFor(a: Gen[][]) {
+	let results: string[] = ['']
+	for (let paramList of a) {
+		let newResults = []
+		for (let param of paramList) {
+			let paramString = param.declString()
+			for (let existing of results) {
+				let newResult = existing
+				if (newResult)
+					newResult += ", "
+				newResult += paramString
+				newResults.push(newResult)
+			}
+		}
+		results = newResults
+	}
+	return results
+}
 
 // KLUDGE: genJoinPrefixed gets a nameSpace form and genJoin doesn't
 function genJoinPrefixed(a:Gen[], prefix:string, nameSpace: string = null) {
@@ -252,34 +278,41 @@ class FieldGen extends IdentifierGen implements Gen {
 }
 
 class SignatureBase {
-	constructor(public params:ParameterGen[], public returnType: TypeGen) {}
+	constructor(public params:ParameterGen[][], public returnType: TypeGen) {}
 
 	depends() {
-		return allDepends( this.params )
-			   .concat( arrayFilter(this.returnType.dependKey()) )
+		return concatAll( this.params.map(allDepends) )
+			   		.concat( arrayFilter(this.returnType.dependKey()) )
 	}
 }
 
 class SignatureGen extends SignatureBase implements Gen { // Function signature
 	owner: ClassGen
-	constructor(public name: string, params:ParameterGen[], returnType: TypeGen) {
+	constructor(public name: string, params:ParameterGen[][], returnType: TypeGen) {
 		super(params, returnType)
 	}
 
 	declString(nameSpace: string = null) : string {
-		let fullParams = (this.owner ? [new ParameterGen("self", this.owner)] : []) 
+		let fullParams = (this.owner ? [[new ParameterGen("self", this.owner)]] : [])
 		               .concat( this.params )
-		return `proc ${identifierScrub(this.name, nameSpace)}*(${params(fullParams)}) : `
+		return paramsFor(fullParams).map(paramString =>
+		     `proc ${identifierScrub(this.name, nameSpace)}*(${paramString}) : `
 		     + this.returnType.typeString()
 			 + ` {.${importDirective(this.name, !!this.owner, nameSpace)}.}`
+		).join("\n")
 	}
 	dependKey() { return this.name }
 }
 
 class SignatureTypeGen extends SignatureBase implements TypeGen {
-	declString() : string { throw new Error("Tried to emit a declaration for a procedure type") }
+	declString() : string { throw new CustomError("Tried to emit a declaration for a procedure type") }
 	typeString() : string {
-		return `proc (${params(this.params)}) : ${this.returnType.typeString()}`
+		let paramStrings = paramsFor(this.params)
+
+		if (paramStrings.length != 1)
+			throw new CustomError("Union-type arguments in a place this is not allowed")
+
+		return `proc (${paramStrings[0]}) : ${this.returnType.typeString()}`
 	}
 
 	dependKey() { return null }
@@ -287,17 +320,19 @@ class SignatureTypeGen extends SignatureBase implements TypeGen {
 
 class ConstructorGen implements Gen {
 	owner: ClassGen // Set by ClassGen.init
-	constructor(public params:ParameterGen[]) {}
+	constructor(public params:ParameterGen[][]) {}
 	declString() : string {
 		let scrubbed = identifierScrub(this.owner.name)
 		let name = "new" + capitalizeFirstLetter(scrubbed)
 		// Note: params.length check is to work around a bug which is fixed in newest Nim beta
-		return `proc ${name}*(${params(this.params)}) : ${scrubbed}`
+		return paramsFor(this.params).map(paramString =>
+		     `proc ${name}*(${paramString}) : ${scrubbed}`
 			 + ` {.importcpp:"new ${importIdentifier(this.owner.name)}${this.params.length?"(@)":""}".}`
+		).join("")
 	}
 
 	depends() {
-		return allDepends( this.params )
+		return concatAll( this.params.map(allDepends) )
 	}
 	dependKey() { return null } // Constructors dont stand alone
 }
@@ -314,7 +349,7 @@ class ConstructorSpec {
 class LiteralTypeGen implements TypeGen {
 	constructor(public literal: string) {}
 
-	declString() : string { throw new Error("Tried to emit a declaration for a core type") }
+	declString() : string { throw new CustomError("Tried to emit a declaration for a core type") }
 	typeString() { return this.literal }
 
 	depends() { return [] }
@@ -467,10 +502,17 @@ class GenVendor {
 		}
 	}
 
-	paramsGen(syms: ts.Symbol[]) : ParameterGen[] {
-		return syms.map(sym =>
-			new ParameterGen(sym.name, this.typeGen(typeChecker.getTypeOfSymbolAtLocation(sym, sourceFile.endOfFileToken)))
-		)
+	paramsGen(syms: ts.Symbol[]) : ParameterGen[][] {
+		return syms.map(sym => {
+			let tsType = typeChecker.getTypeOfSymbolAtLocation(sym, sourceFile.endOfFileToken)
+			// Unions are not supported by dts2nim overall, but they are supported in the special case of params
+			let subTypes = tsType.flags & ts.TypeFlags.Union ?
+				(tsType as any).types : // CHEAT: Types field on unions is not exposed
+				[tsType]
+
+			// FIXME: This throws UnusableType but in the case of a union we could just skip unusable types
+			return subTypes.map(subType => new ParameterGen(sym.name, this.typeGen(subType)))
+		})
 	}
 
 	signatureGen(sym: ts.Symbol, callSignature: ts.Signature) : SignatureGen {
@@ -501,8 +543,15 @@ class GenVendor {
 		return result
 	}
 
-	signatureTypeGen(callSignature: ts.Signature) : SignatureTypeGen {
-		return new SignatureTypeGen(this.paramsGen(callSignature.getParameters()), this.typeGen(callSignature.getReturnType()))
+	signatureTypeGen(tsType: ts.Type, callSignature: ts.Signature) : SignatureTypeGen {
+		let params = this.paramsGen(callSignature.getParameters())
+
+		// FIXME: At the moment unions aren't supported here.
+		for (let param of params)
+			if (param.length > 1)
+				throw new UnusableType(tsType)
+
+		return new SignatureTypeGen(params, this.typeGen(callSignature.getReturnType()))
 	}
 
 	constructorSpec(declarations: ts.Declaration[], ownerName: string = "(unknown)") : ConstructorSpec {
@@ -834,7 +883,7 @@ class GenVendor {
 		if (tsType.flags & ts.TypeFlags.Anonymous) {
 			let callSignatures = tsType.getCallSignatures()
 			if (callSignatures.length == 1)
-				return this.signatureTypeGen(callSignatures[0])
+				return this.signatureTypeGen(tsType, callSignatures[0])
 		}
 		
 		throw new UnusableType(tsType)
@@ -940,4 +989,4 @@ for (let group of groupedGenerators) {
 	}
 }
 
-console.log( decls(sortedGenerators) )
+console.log( declsFor(sortedGenerators) )

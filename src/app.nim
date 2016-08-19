@@ -62,3 +62,6 @@ testAssert(QCProto_numStatic3 == 80, "Pseudoclass, read static member")
 testAssert(QCProto_numStatic4(4) == 94, "Pseudoclass, call static method")
 
 testAssert(QIproto.num5 == 62, "Pseudoclass instance read")
+
+testAssert(QFforcenumber("41") == 41, "Union test")
+testAssert(QFforcenumber(44) == 44, "Union test 2")

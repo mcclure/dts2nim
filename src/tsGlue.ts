@@ -126,3 +126,9 @@ class QCimplforproto implements QCproto {
 var QCproto: QCprototheconstructor = QCimplforproto
 
 var QIproto: QCproto = new QCproto(62)
+
+var QFfexample : string | (number | QCproto)
+
+function QFforcenumber(num : string | number) : number {
+	return +num
+}
