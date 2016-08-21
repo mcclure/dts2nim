@@ -1,11 +1,5 @@
 // Takes an input ts file, converts types in final scope to Nim and outputs Nim file to stdout
-
-// Conversion rules:
-// - Constructors become newClassname()
-// - $ becomes "zz"
-// - Groups of two or more underscores become single underscores
-// - Underscores at the start of a symbol become "z"
-// - Nim reserved words (only "type" "end" "from" "when" currently) get x-prefixed
+// (c) Andi McClure 2016
 
 import ts = require("typescript")
 import util = require("util")
@@ -23,9 +17,9 @@ commander
 	.option('-l, --logfile <file>', 'Warnings file (omit for stderr)')
 	.option('-q, --quiet', 'Suppress warnings')
 	.option('--blacklist <list>', 'Comma-separated list of items to skip (see docs)')
-	.option('--staticShadow', 'Block static members from being inherited by objects')
-	.option('--debugPrefix <prefix>', 'Print additional info for symbols starting with...')
-	.option('--debugVerbose', 'Dump entire object when printing debug information')
+	.option('--static-shadow', 'Block static members from being inherited by objects')
+	.option('--debug-prefix <prefix>', 'Print additional info for symbols starting with...')
+	.option('--debug-verbose', 'Dump entire object when printing debug information')
 	.arguments("<file>")
 	.parse(process.argv)
 if (commander.args.length < 1)
