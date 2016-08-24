@@ -1,3 +1,5 @@
+// TypeScript side of tests-- defines functions called by testMain.nim
+
 function testAssert(condition: boolean, message:string) {
 	if (!condition)
 		throw new Error("Test failed: " + message)
@@ -98,8 +100,10 @@ let QFvarcallback : (x: number, y: (z: number) => number) => number
 
 QFvarcallback = (x, y) => y(x + 1) + 1
 
-// Ugly way to access global variable
-let QFbackflow = () : number => (<any>this).QBbackflow
+// This will allow QFbackflow through the type checker, but will not declare a variable
+declare var QBbackflow : number
+
+let QFbackflow = () : number => QBbackflow
 
 // A pattern lib.d.ts frequently follows.
 interface QCproto {

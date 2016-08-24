@@ -1,32 +1,39 @@
 # Start by running: npm install -g typescript typings && npm install
 
-all: install/app.js install/tsGlue.js install/index.html install/style.css
+all: bin/dts2nim.js
 
-# Clean.
+# Clean
+
 clean:
-	rm -f install/* src/tsGlue.nim tools/dts2nim.js
+	rm -f bin/* tests/test.js tests/tsGlue.js tests/tsGlue.nim tests/testMain.js
 
-install/tsGlue.js: src/tsGlue.ts
+# Build app
+
+bin/dts2nim.js: typings/index.d.ts src/dts2nim.ts
 	mkdir -p $(@D)
 	tsc
 
-install/app.js: src/app.nim src/tsGlue.nim
+typings/index.d.ts: typings.json
+	typings install
+
+# Tests
+
+test: tests/test.js
+	node ./tests/test.js
+
+tests/test.js: tests/tsGlue.js tests/testMain.js
+	echo "#!/usr/bin/env node" > $@
+	cat tests/tsGlue.js >> $@
+	cat tests/testMain.js >> $@
+
+tests/tsGlue.js: tests/tsGlue.ts
+	mkdir -p $(@D)
+	tsc -p $(@D)
+
+tests/tsGlue.nim: tests/tsGlue.ts tests/tsGlue.js bin/dts2nim.js
+	node bin/dts2nim.js -q $< > $@
+
+tests/testMain.js: tests/testMain.nim tests/tsGlue.nim
 	mkdir -p $(@D)
 	nim js -o:$@ $<
 
-install/index.html: static/index.html
-	mkdir -p $(@D)
-	cp $< $@
-
-install/style.css: static/style.css
-	mkdir -p $(@D)
-	cp $< $@
-
-src/tsGlue.nim: src/tsGlue.ts install/tsGlue.js tools/dts2nim.js
-	node tools/dts2nim.js -q $< > $@
-
-tools/dts2nim.js: tools/typings/index.d.ts tools/dts2nim.ts
-	tsc -p tools
-
-tools/typings/index.d.ts: tools/typings.json
-	cd tools && typings install

@@ -1,5 +1,7 @@
 import tsGlue
 
+# Nim side of tests-- calls into functions defined in tsGlue.ts
+
 # POST
 
 var failed = false

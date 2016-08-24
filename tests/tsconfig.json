@@ -4,7 +4,6 @@
     "outDir": "."
   },
   "files": [
-    "typings/index.d.ts",
-    "dts2nim.ts"
+    "tsGlue.ts"
   ]
 }

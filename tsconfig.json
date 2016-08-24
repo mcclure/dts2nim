@@ -1,9 +1,10 @@
 {
   "compilerOptions": {
     "module": "commonjs",
-    "outDir": "install"
+    "outDir": "bin"
   },
   "files": [
-    "src/tsGlue.ts"
+    "typings/index.d.ts",
+    "src/dts2nim.ts"
   ]
 }
