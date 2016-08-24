@@ -10,6 +10,9 @@
   "version": "0.0.1",
   "main": "bin/dts2nim.js",
   "devDependencies": {},
+  "files": [
+  	"bin/dts2nim.js"
+  ],
   "bin": {
   	"dts2nim" : "bin/dts2nim.js"
   },
