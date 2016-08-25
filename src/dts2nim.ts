@@ -1,3 +1,5 @@
+#!/usr/bin/env node
+
 // Takes an input ts file, converts types in final scope to Nim and outputs Nim file to stdout
 // (c) Andi McClure 2016
 
