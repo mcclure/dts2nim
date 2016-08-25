@@ -1,6 +1,6 @@
 # `dts2nim`: a TypeScript/Nim bridge
 
-This is a command-line utility that analyzes a TypeScript program or type definition file and emits a source module for the Nim programming language, containing import bindings for all symbols visible in the TypeScript file. In other words, this allows you to use any JavaScript library which TypeScript can use, from within Nim.
+This is a command-line utility that analyzes a [TypeScript](https://www.typescriptlang.org/) program or type definition file and emits a source module for the [Nim](http://nim-lang.org/) programming language, containing import bindings for all symbols visible in the TypeScript file. In other words, this allows you to use any JavaScript library which TypeScript can use, from within Nim.
 
 ## Usage
 
@@ -10,7 +10,7 @@ Using the tool looks like:
 
     dts2nim example.ts -o example.nim -q
 
-The tool takes in exactly one `.ts` or `.d.ts` file. If you need multiple `.ts` files worth of material, make a joiner file and put some `// <reference />`s in it. The output file is specified with `-o`. While running, the tool will emit [many] warnings describing the symbols it was not able to translate; you can direct these to a file with `-l`, or silence them with `-q`.
+The tool takes in exactly one `.ts` or `.d.ts` file. If you need to use multiple `.ts` files worth of material, make a joiner file and put some `// <reference />`s in it. The output file is specified with `-o`. While running, the tool will emit [many] warnings describing the symbols it was not able to translate; you can direct these to a file with `-l`, or silence them with `-q`.
 
 The tool maintains a "blacklist" of symbols it should not try to translate. This is needed because there are at the moment some types which the tool will attempt to translate even though translating them will result in a Nim compile error. About fourteen items from the standard library are on the blacklist by default. You can add more items using the `--blacklist` flag, which takes a comma-separated list.
 
@@ -49,6 +49,16 @@ In addition, there are two large "conceptual" fixes that should be done:
 * I would like the tool to eventually evolve to create bindings for other languages (such as Haxe, or maybe even C++ or C#). Although the tool only supports Nim currently, it is designed for additional output languages to be added easily.
 
 The tool is being developed in a Mercurial repository at [BitBucket](https://bitbucket.org/runhello/dts2nim). Since most people prefer git, [a GitHub mirror](https://github.com/mcclure/dts2nim) is also maintained. If you wish to report issues or submit a pull request, please do so at the GitHub page.
+
+## Building
+
+You can install the tool by running `npm install dts2nim`. The tool will be installed into `./node_modules/.bin`.
+
+To build your own copy from source, you will need to have `npm`, GNU `make`, TypeScript, and `typings` installed and available from your command line. You can get those last two by running `npm install -g typescript typings`.
+
+Once you have these things, run `npm install` followed by `make all`.
+
+To run the tests, run `npm test`. This will run the tests in node, and after you have done this you can open [tests/index.html](tests/index.html) to run the same tests in a browser.
 
 ## License
 
