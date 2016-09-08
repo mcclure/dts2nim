@@ -693,6 +693,30 @@ class GenVendor {
 		return methods
 	}
 
+	indexes(member:ts.Symbol, ownerName:string) {
+		let methods : SignatureGen[] = []
+		if (blacklisted("index", ownerName)) {
+			warn(`Refusing to translate blacklisted indexer for class ${ownerName}`)
+		} else {
+			for (let declaration of member.declarations) {
+				try {
+					let callSignature = typeChecker.getSignatureFromDeclaration(declaration as ts.SignatureDeclaration)
+					let params = this.paramsGen(callSignature.getParameters()) // Always either number or string
+					let returnType = this.typeGen(callSignature.getReturnType())
+					methods.push( new IndexSignatureGen(true, params, returnType ) )
+				} catch (e) {
+					if (e instanceof UnusableType)
+						warn(`Could not translate indexer on class ${ownerName}`
+							+ ` because couldn't translate type ${typeChecker.typeToString(e.type)}`
+						)
+					else
+						throw e
+				}
+			}
+		}
+		return methods
+	}
+
 	collectionGen(gens : Gen[]) {
 		return new CollectionGen(gens)
 	}
@@ -831,21 +855,7 @@ class GenVendor {
 
 				// Indexes and show up as signatures
 				} else if (hasBit(member.flags, ts.SymbolFlags.Signature) && member.name == "__index") {
-					for (let declaration of member.declarations) {
-						try {
-							let callSignature = typeChecker.getSignatureFromDeclaration(declaration as ts.SignatureDeclaration)
-							let params = this.paramsGen(callSignature.getParameters()) // Always either number or string
-							let returnType = this.typeGen(callSignature.getReturnType())
-							methods.push( new IndexSignatureGen(true, params, returnType ) )
-						} catch (e) {
-							if (e instanceof UnusableType)
-								warn(`Could not translate indexer on class ${sym.name}`
-									+ ` because couldn't translate type ${typeChecker.typeToString(e.type)}`
-								)
-							else
-								throw e
-						}
-					}
+					methods = methods.concat( this.indexes(member, name) )
 
 				// Member is unsupported
 				} else {
