@@ -141,4 +141,4 @@ interface QCindex {
 	[index: number]: number;
 }
 
-let QIindex : QCIndex = {}
+let QIindex : QCindex = {}

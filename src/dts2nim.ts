@@ -356,16 +356,15 @@ class IndexSignatureGen extends SignatureGen {
 	declString(nameSpace: string = null) : string { // Note namespace is ignored; AFAIK you can't have a static index
 		if (!this.owner || nameSpace) // Warning: declString() isn't supposed to be able to fail, so these had better actually be impossible
 			throw new GenConstructFail("Invalid IndexSignatureGen got generated at some point")
-		let ownerParam = new ParameterGen("self", this.owner)
-		let ownerParamString = ownerParam.declString()
+		let ownerParamString = new ParameterGen("self", this.owner).declString()
 		let returnTypeString = this.returnType.typeString()
 		let returnParamString: string = null
 		return paramsFor(this.params).map(paramString => { // Will execute once for each union member in the key type
-			let result = `proc \`[]\`*(${ownerParam.declString()}, ${paramString}) : ${this.returnType.typeString()} {.importcpp:"#[#]".}`
+			let result = `proc \`[]\`*(${ownerParamString}, ${paramString}) : ${this.returnType.typeString()} {.importcpp:"#[#]".}`
 			if (this.readwrite) {
 				if (!returnParamString)
 					returnParamString = new ParameterGen("value", this.returnType).declString()
-				result += `\nproc \`[]=\`*(${identifierScrub(ownerParam.name)}: var ${ownerParam.type.typeString()}, ${paramString}, ${returnParamString}) = {.emit: "\`t\`[\`key\`] = \`val\`;".}`
+				result += `\nproc \`[]=\`*(${ownerParamString}, ${paramString}, ${returnParamString}) {.importcpp:"#[#] = #".}`
 			}
 			return result
 		}).join("\n")
@@ -703,7 +702,7 @@ class GenVendor {
 					let callSignature = typeChecker.getSignatureFromDeclaration(declaration as ts.SignatureDeclaration)
 					let params = this.paramsGen(callSignature.getParameters()) // Always either number or string
 					let returnType = this.typeGen(callSignature.getReturnType())
-					methods.push( new IndexSignatureGen(true, params, returnType ) )
+					methods.push( new IndexSignatureGen(true, params, returnType ) ) // TODO: How to identify readonly?
 				} catch (e) {
 					if (e instanceof UnusableType)
 						warn(`Could not translate indexer on class ${ownerName}`

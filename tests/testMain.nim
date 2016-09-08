@@ -67,3 +67,7 @@ testAssert(QIproto.num5 == 62, "Pseudoclass instance read")
 
 testAssert(QFforcenumber("41") == 41, "Union test")
 testAssert(QFforcenumber(44) == 44, "Union test 2")
+
+QIindex[5] = 4
+let tempFloat:float = 4
+testAssert(QIindex[5] == tempFloat, "Index test")
