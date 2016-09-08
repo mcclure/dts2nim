@@ -136,3 +136,9 @@ var QFfexample : string | (number | QCproto)
 function QFforcenumber(num : string | number) : number {
 	return +num
 }
+
+interface QCindex {
+	[index: number]: number;
+}
+
+let QIindex : QCIndex = {}

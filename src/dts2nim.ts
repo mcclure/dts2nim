@@ -318,6 +318,7 @@ class FieldGen extends IdentifierGen implements Gen {
 	}	
 }
 
+// A signature refers to a single signature declaration. It contains multiple sets of params, and therefore results in multiple output signatures, because of unions.
 class SignatureBase {
 	constructor(public params:ParameterGen[][], public returnType: TypeGen) {}
 
@@ -336,13 +337,39 @@ class SignatureGen extends SignatureBase implements Gen { // Function signature
 	declString(nameSpace: string = null) : string {
 		let fullParams = (this.owner ? [[new ParameterGen("self", this.owner)]] : [])
 		               .concat( this.params )
-		return paramsFor(fullParams).map(paramString =>
-		     `proc ${identifierScrub(this.name, nameSpace)}*(${paramString}) : `
-		     + this.returnType.typeString()
+		let returnTypeString = this.returnType.typeString()
+		// Todo calculate return type only once
+		return paramsFor(fullParams).map(paramString => // Will execute once for each interpretation of union args
+		     `proc ${identifierScrub(this.name, nameSpace)}*(${paramString}) : ${returnTypeString}`
 			 + ` {.${importDirective(this.name, !!this.owner, nameSpace)}.}`
 		).join("\n")
 	}
 	dependKey() { return this.name }
+}
+
+// KLUDGE: Indexing is represented as a signature even though it behaves pretty differently.
+class IndexSignatureGen extends SignatureGen {
+	constructor(public readwrite: boolean, params:ParameterGen[][], returnType: TypeGen) {
+		super("[]", params, returnType)
+	}
+
+	declString(nameSpace: string = null) : string { // Note namespace is ignored; AFAIK you can't have a static index
+		if (!this.owner || nameSpace) // Warning: declString() isn't supposed to be able to fail, so these had better actually be impossible
+			throw new GenConstructFail("Invalid IndexSignatureGen got generated at some point")
+		let ownerParam = new ParameterGen("self", this.owner)
+		let ownerParamString = ownerParam.declString()
+		let returnTypeString = this.returnType.typeString()
+		let returnParamString: string = null
+		return paramsFor(this.params).map(paramString => { // Will execute once for each union member in the key type
+			let result = `proc \`[]\`*(${ownerParam.declString()}, ${paramString}) : ${this.returnType.typeString()} {.importcpp:"#[#]".}`
+			if (this.readwrite) {
+				if (!returnParamString)
+					returnParamString = new ParameterGen("value", this.returnType).declString()
+				result += `\nproc \`[]=\`*(${identifierScrub(ownerParam.name)}: var ${ownerParam.type.typeString()}, ${paramString}, ${returnParamString}) = {.emit: "\`t\`[\`key\`] = \`val\`;".}`
+			}
+			return result
+		}).join("\n")
+	}
 }
 
 class SignatureTypeGen extends SignatureBase implements TypeGen {
@@ -670,6 +697,8 @@ class GenVendor {
 		return new CollectionGen(gens)
 	}
 
+
+
 	// Some notes on ClassGen init phases: Initialization happens in two phases.
 	// Inheritance load: The class object is created. The inherit field is filled out. (This phase can fail.)
 	// Full load: All fields are filled out, all member fields, methods, constructors etc are known. (This phase can't fail.)
@@ -799,6 +828,24 @@ class GenVendor {
 						continue
 
 					methods = methods.concat( this.methods(member, memberType, name) )
+
+				// Indexes and show up as signatures
+				} else if (hasBit(member.flags, ts.SymbolFlags.Signature) && member.name == "__index") {
+					for (let declaration of member.declarations) {
+						try {
+							let callSignature = typeChecker.getSignatureFromDeclaration(declaration as ts.SignatureDeclaration)
+							let params = this.paramsGen(callSignature.getParameters()) // Always either number or string
+							let returnType = this.typeGen(callSignature.getReturnType())
+							methods.push( new IndexSignatureGen(true, params, returnType ) )
+						} catch (e) {
+							if (e instanceof UnusableType)
+								warn(`Could not translate indexer on class ${sym.name}`
+									+ ` because couldn't translate type ${typeChecker.typeToString(e.type)}`
+								)
+							else
+								throw e
+						}
+					}
 
 				// Member is unsupported
 				} else {
