@@ -7,7 +7,7 @@
   },
   "name": "dts2nim",
   "description": "Binding generator from TypeScript to the Nim programming language",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "main": "bin/dts2nim.js",
   "devDependencies": {},
   "files": [
