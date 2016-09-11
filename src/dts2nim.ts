@@ -20,6 +20,7 @@ commander
 	.option('-q, --quiet', 'Suppress warnings')
 	.option('--blacklist <list>', 'Comma-separated list of items to skip (see docs)')
 	.option('--static-shadow', 'Block static members from being inherited by objects')
+	.option('--number', 'Make "number" a new type rather than aliasing to float')
 	.option('--debug-prefix <prefix>', 'Print additional info for symbols starting with...')
 	.option('--debug-verbose', 'Dump entire object when printing debug information')
 	.arguments("<file>")
@@ -88,6 +89,12 @@ write("")
 write("when not defined(js) and not defined(Nimdoc):")
 write("  {.error: \"This module only works on the JavaScript platform\".}")
 write("")
+
+if (commander.number) {
+	write("type number* = float")
+	for (let t of ["int8", "uint8", "int16", "uint16", "int32", "uint32", "int64", "uint64", "int", "float32", "float64"])
+		write(`converter toNumber*(x: ${t}): number = return x.number`)
+}
 
 // Support
 
@@ -963,7 +970,7 @@ class GenVendor {
 
 	typeGen(tsType: ts.Type) : TypeGen {
 		if (tsType.flags & ts.TypeFlags.Number) // FIXME: Numberlike?
-			return new LiteralTypeGen("float")
+			return new LiteralTypeGen(commander.number ? "number" : "float")
 		if (tsType.flags & ts.TypeFlags.String) // FIXME: Stringlike?
 			return new LiteralTypeGen("cstring")
 		if (tsType.flags & ts.TypeFlags.Void)
